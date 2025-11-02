@@ -190,9 +190,9 @@ public class TelegramUpdateHandlerTests
         });
         await harness.DbContext.SaveChangesAsync();
 
-        harness.SentMessages.Clear();
+        harness.ClearMessages();
         await harness.SendCallbackAsync("main_reminders");
-        harness.SentMessages.Clear();
+        harness.ClearMessages();
 
         await harness.SendCallbackAsync("reminders_list");
 
@@ -200,6 +200,154 @@ public class TelegramUpdateHandlerTests
         var (text, markup) = harness.SentMessages.Single();
         text.Should().Contain("15:00");
         markup!.InlineKeyboard.Last().Single().Text.Should().Be("↩️ К напоминаниям");
+    }
+
+    [Fact]
+    public async Task TemplateSelection_Flow_ShouldScheduleReminder()
+    {
+        await using var harness = new HandlerHarness();
+        await harness.SendTextAsync("/start");
+
+        harness.DbContext.ReminderTemplates.Add(new ReminderTemplate
+        {
+            Id = Guid.NewGuid(),
+            Code = "drink",
+            Title = "Попей воды",
+            Description = "",
+            DefaultRepeatIntervalMinutes = null,
+            IsSystem = true
+        });
+        await harness.DbContext.SaveChangesAsync();
+
+        await harness.SendCallbackAsync("main_reminders");
+        harness.ClearMessages();
+
+        await harness.SendCallbackAsync("reminders_templates");
+        harness.SentMessages.Single().Text.Should().Contain("Выбери шаблон");
+
+        await harness.SendCallbackAsync("tpl:drink");
+        harness.SentMessages.Last().Text.Should().Contain("Через сколько минут");
+
+        await harness.SendCallbackAsync("tpl_delay:drink:15");
+        harness.SentMessages.Last().Text.Should().Contain("Как часто повторять");
+
+        await harness.SendCallbackAsync("tpl_repeat:drink:0");
+        harness.SentMessages.Last().Text.Should().Contain("Готово!");
+
+        var reminder = await harness.DbContext.Reminders.SingleAsync();
+        reminder.Message.Should().Be("Попей воды");
+        reminder.IsActive.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task CustomReminder_Flow_ShouldPersistMessage()
+    {
+        await using var harness = new HandlerHarness();
+        await harness.SendTextAsync("/start");
+
+        await harness.SendCallbackAsync("main_reminders");
+        harness.ClearMessages();
+
+        await harness.SendCallbackAsync("custom_new");
+        harness.SentMessages.Single().Text.Should().Contain("Введи текст напоминания");
+
+        await harness.SendTextAsync("Сделать зарядку");
+        harness.SentMessages.Last().Text.Should().Contain("Через сколько минут");
+
+        await harness.SendCallbackAsync("custom_delay:custom:manual");
+        await harness.SendTextAsync("20");
+        await harness.SendCallbackAsync("custom_repeat:custom:manual");
+        await harness.SendTextAsync("0");
+
+        harness.SentMessages.Last().Text.Should().Contain("Готово!");
+
+        var reminder = await harness.DbContext.Reminders.SingleAsync();
+        reminder.Message.Should().Be("Сделать зарядку");
+        reminder.RepeatIntervalMinutes.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task DisableReminder_ShouldMarkInactive()
+    {
+        await using var harness = new HandlerHarness();
+        await harness.SendTextAsync("/start");
+
+        var user = await harness.DbContext.Users.SingleAsync();
+        var reminder = new Reminder
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            User = user,
+            Message = "Проверить почту",
+            ScheduledAt = DateTime.UtcNow,
+            NextTriggerAt = DateTime.UtcNow,
+            IsActive = true
+        };
+        harness.DbContext.Reminders.Add(reminder);
+        await harness.DbContext.SaveChangesAsync();
+
+        await harness.SendCallbackAsync("main_reminders");
+        harness.ClearMessages();
+
+        await harness.SendCallbackAsync("reminders_list");
+        harness.ClearMessages();
+
+        await harness.SendCallbackAsync($"reminders_disable:{reminder.Id:N}");
+
+        var updatedReminder = await harness.DbContext.Reminders.SingleAsync();
+        updatedReminder.IsActive.Should().BeFalse();
+        harness.SentMessages.Should().Contain(m => m.Text.Contains("Напоминание отключено"));
+    }
+
+    [Fact]
+    public async Task TemplateDelay_InvalidCode_ShouldNotify()
+    {
+        await using var harness = new HandlerHarness();
+        await harness.SendTextAsync("/start");
+
+        await harness.SendCallbackAsync("tpl_delay:unknown:15");
+
+        harness.SentMessages.Last().Text.Should().Contain("Шаблон не найден");
+    }
+
+    [Fact]
+    public async Task ManualTimeZone_InvalidInput_ShouldKeepAwaiting()
+    {
+        await using var harness = new HandlerHarness();
+        await harness.SendTextAsync("/start");
+        harness.ClearMessages();
+
+        await harness.SendCallbackAsync("main_settings");
+        harness.ClearMessages();
+
+        await harness.SendCallbackAsync("settings_timezone_manual");
+        harness.ClearMessages();
+
+        await harness.SendTextAsync("Mars/Colony");
+
+        harness.SentMessages.Last().Text.Should().Contain("Не удалось распознать таймзону");
+        var user = await harness.DbContext.Users.SingleAsync();
+        user.TimeZoneId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CustomRepeat_InvalidNumber_ShouldPromptAgain()
+    {
+        await using var harness = new HandlerHarness();
+        await harness.SendTextAsync("/start");
+
+        await harness.SendCallbackAsync("custom_new");
+        await harness.SendTextAsync("Почитать книгу");
+        await harness.SendCallbackAsync("custom_delay:custom:15");
+
+        await harness.SendCallbackAsync("custom_repeat:custom:manual");
+        harness.ClearMessages();
+
+        await harness.SendTextAsync("-1");
+
+        harness.SentMessages.Last().Text.Should().Contain("неотрицательное число");
+        var reminderCount = await harness.DbContext.Reminders.CountAsync();
+        reminderCount.Should().Be(0);
     }
 
     private sealed class HandlerHarness : IAsyncDisposable
@@ -257,6 +405,8 @@ public class TelegramUpdateHandlerTests
             await DbContext.Database.EnsureDeletedAsync();
             await DbContext.DisposeAsync();
         }
+
+        public void ClearMessages() => SentMessages.Clear();
     }
 
     private sealed class TestTelegramUpdateHandler : TelegramUpdateHandler
