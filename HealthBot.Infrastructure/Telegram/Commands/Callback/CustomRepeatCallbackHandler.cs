@@ -1,0 +1,30 @@
+using System;
+using System.Threading.Tasks;
+using HealthBot.Infrastructure.Telegram.Commands.Abstractions;
+using HealthBot.Infrastructure.Telegram.Commands.Workflows;
+using Microsoft.Extensions.Logging;
+using Telegram.Bot.Types;
+
+namespace HealthBot.Infrastructure.Telegram.Commands.Callback;
+
+public sealed class CustomRepeatCallbackHandler : CallbackCommandHandlerBase
+{
+    public CustomRepeatCallbackHandler(ILogger<CustomRepeatCallbackHandler> logger)
+        : base(logger)
+    {
+    }
+
+    public override int Priority => -41;
+
+    protected override bool CanHandle(CallbackQuery callbackQuery, ConversationContext session)
+    {
+        var data = callbackQuery.Data;
+        return data is not null && data.StartsWith(TelegramCommandNames.CallbackCustomRepeat, StringComparison.Ordinal);
+    }
+
+    protected override Task HandleCallbackAsync(CommandContext context, CallbackQuery callbackQuery)
+    {
+        var parts = SplitCallbackData(callbackQuery);
+        return ReminderWorkflow.HandleCustomRepeatCallbackAsync(context, parts);
+    }
+}

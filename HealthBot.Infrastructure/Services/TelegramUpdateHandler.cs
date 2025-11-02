@@ -6,6 +6,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using HealthBot.Core.Entities;
+using HealthBot.Infrastructure.Telegram;
+using HealthBot.Infrastructure.Telegram.Commands;
 using CoreUser = HealthBot.Core.Entities.User;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -22,39 +24,17 @@ public class TelegramUpdateHandler : IUpdateHandler
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<TelegramUpdateHandler> _logger;
+    private readonly CommandDispatcher _dispatcher;
     private readonly ConcurrentDictionary<long, ConversationContext> _sessions = new();
 
-    private const string CallbackMenu = "menu";
-    private const string CallbackMainReminders = "main_reminders";
-    private const string CallbackMainNutrition = "main_nutrition";
-    private const string CallbackMainSettings = "main_settings";
-    private const string CallbackTemplateSelect = "tpl";
-    private const string CallbackTemplateDelay = "tpl_delay";
-    private const string CallbackTemplateRepeat = "tpl_repeat";
-    private const string CallbackCustomNew = "custom_new";
-    private const string CallbackCustomDelay = "custom_delay";
-    private const string CallbackCustomRepeat = "custom_repeat";
-    private const string CallbackRemindersList = "reminders_list";
-    private const string CallbackRemindersTemplates = "reminders_templates";
-    private const string CallbackRemindersDisable = "reminders_disable";
-    private const string CallbackSettingsTimezone = "settings_timezone";
-    private const string CallbackSettingsTimezoneSelect = "settings_timezone_select";
-    private const string CallbackSettingsTimezoneManual = "settings_timezone_manual";
-
-    private static readonly string[] PopularTimeZoneIds =
-    {
-        "Europe/Moscow",
-        "Europe/Kyiv",
-        "Europe/Minsk",
-        "Asia/Almaty",
-        "Asia/Yekaterinburg",
-        "Asia/Vladivostok"
-    };
-
-    public TelegramUpdateHandler(IServiceScopeFactory scopeFactory, ILogger<TelegramUpdateHandler> logger)
+    public TelegramUpdateHandler(
+        IServiceScopeFactory scopeFactory,
+        ILogger<TelegramUpdateHandler> logger,
+        CommandDispatcher dispatcher)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _dispatcher = dispatcher;
     }
 
     public async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
@@ -64,12 +44,13 @@ public class TelegramUpdateHandler : IUpdateHandler
             switch (update.Type)
             {
                 case UpdateType.Message when update.Message is not null:
-                    await HandleMessageAsync(botClient, update.Message, cancellationToken);
+                    await HandleMessageAsync(botClient, update, cancellationToken);
                     break;
                 case UpdateType.CallbackQuery when update.CallbackQuery is not null:
-                    await HandleCallbackAsync(botClient, update.CallbackQuery, cancellationToken);
+                    await HandleCallbackAsync(botClient, update, cancellationToken);
                     break;
                 default:
+                    _logger.LogDebug("Unsupported update type {Type}", update.Type);
                     break;
             }
         }
@@ -91,8 +72,9 @@ public class TelegramUpdateHandler : IUpdateHandler
         return Task.CompletedTask;
     }
 
-    private async Task HandleMessageAsync(ITelegramBotClient botClient, Message message, CancellationToken cancellationToken)
+    private async Task HandleMessageAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
     {
+        var message = update.Message!;
         if (message.Chat.Type is not ChatType.Private)
         {
             _logger.LogDebug("Ignoring non-private chat {ChatId}", message.Chat.Id);
@@ -100,866 +82,63 @@ public class TelegramUpdateHandler : IUpdateHandler
         }
 
         using var scope = _scopeFactory.CreateScope();
-        var userService = scope.ServiceProvider.GetRequiredService<UserService>();
-        var reminderService = scope.ServiceProvider.GetRequiredService<ReminderService>();
+        var services = scope.ServiceProvider;
+        var userService = services.GetRequiredService<UserService>();
 
         var username = message.From?.Username ?? message.Chat.Username;
         var user = await userService.RegisterUserAsync(message.Chat.Id, username, cancellationToken);
         var session = GetSession(message.Chat.Id);
 
-        if (string.IsNullOrWhiteSpace(message.Text))
+        var context = new CommandContext(
+            botClient,
+            update,
+            message.Chat.Id,
+            session,
+            user,
+            services,
+            cancellationToken,
+            SendTrackedMessageAsync,
+            DeleteLastBotMessageAsync);
+
+        if (!await _dispatcher.DispatchAsync(context))
         {
-            await DeleteLastBotMessageAsync(botClient, message.Chat.Id, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, message.Chat.Id, session,
-                "😅 Пока понимаю только текстовые команды.",
-                cancellationToken: cancellationToken);
-            return;
+            await context.DeleteLastMessageAsync();
+            await context.SendMessageAsync("Я пока не понимаю это сообщение. Используй /menu для управления напоминаниями.");
         }
-
-        var text = message.Text.Trim();
-
-        if (text.Equals("/start", StringComparison.OrdinalIgnoreCase) ||
-            text.Equals("/menu", StringComparison.OrdinalIgnoreCase))
-        {
-            session.Reset();
-            await DeleteLastBotMessageAsync(botClient, message.Chat.Id, session, cancellationToken);
-            var introMessage = "Привет! Я Fitly.AI 🩺\n\nВыбери раздел ниже.";
-            await SendMainMenuAsync(botClient, message.Chat.Id, session, cancellationToken, introMessage);
-            return;
-        }
-
-        if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
-        {
-            session.Reset();
-            await DeleteLastBotMessageAsync(botClient, message.Chat.Id, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, message.Chat.Id, session,
-                "Диалог сброшен. Используй /menu, чтобы начать заново.",
-                cancellationToken: cancellationToken);
-            return;
-        }
-
-        switch (session.Stage)
-        {
-            case ConversationStage.AwaitingCustomMessage:
-                await HandleCustomMessageAsync(botClient, reminderService, user, message.Chat.Id, text, session, cancellationToken);
-                return;
-            case ConversationStage.AwaitingFirstDelayMinutes when session.ExpectManualInput:
-                await HandleManualDelayAsync(botClient, reminderService, user, message.Chat.Id, text, session, cancellationToken);
-                return;
-            case ConversationStage.AwaitingRepeatMinutes when session.ExpectManualInput:
-                await HandleManualRepeatAsync(botClient, reminderService, user, message.Chat.Id, text, session, cancellationToken);
-                return;
-            case ConversationStage.AwaitingTimeZoneManual when session.ExpectManualInput:
-                await HandleManualTimeZoneAsync(botClient, userService, user, message.Chat.Id, text, session, cancellationToken);
-                return;
-        }
-
-        await DeleteLastBotMessageAsync(botClient, message.Chat.Id, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, message.Chat.Id, session,
-            "Я пока не понимаю это сообщение. Используй /menu для управления напоминаниями.",
-            cancellationToken: cancellationToken);
     }
 
-    private async Task HandleCallbackAsync(ITelegramBotClient botClient, CallbackQuery callbackQuery, CancellationToken cancellationToken)
+    private async Task HandleCallbackAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
     {
+        var callbackQuery = update.CallbackQuery!;
         var chatId = callbackQuery.Message?.Chat.Id ?? callbackQuery.From.Id;
 
         using var scope = _scopeFactory.CreateScope();
-        var userService = scope.ServiceProvider.GetRequiredService<UserService>();
-        var reminderService = scope.ServiceProvider.GetRequiredService<ReminderService>();
+        var services = scope.ServiceProvider;
+        var userService = services.GetRequiredService<UserService>();
 
         var username = callbackQuery.From.Username;
         var user = await userService.RegisterUserAsync(chatId, username, cancellationToken);
         var session = GetSession(chatId);
 
-        var data = callbackQuery.Data ?? string.Empty;
-        var parts = data.Split(':', StringSplitOptions.RemoveEmptyEntries);
+        var context = new CommandContext(
+            botClient,
+            update,
+            chatId,
+            session,
+            user,
+            services,
+            cancellationToken,
+            SendTrackedMessageAsync,
+            DeleteLastBotMessageAsync);
 
-        try
+        if (!await _dispatcher.DispatchAsync(context))
         {
-            switch (parts.FirstOrDefault())
-            {
-                case CallbackMenu:
-                    session.Reset();
-                    await botClient.AnswerCallbackQuery(callbackQuery.Id, cancellationToken: cancellationToken);
-                    await SendMainMenuAsync(botClient, chatId, session, cancellationToken);
-                    return;
-
-                case CallbackMainReminders:
-                    session.Reset();
-                    await ShowReminderDashboardAsync(botClient, reminderService, user, chatId, session, cancellationToken);
-                    break;
-
-                case CallbackMainNutrition:
-                    session.Reset();
-                    await ShowNutritionStubAsync(botClient, chatId, session, cancellationToken);
-                    break;
-
-                case CallbackMainSettings:
-                    session.Reset();
-                    await ShowSettingsMenuAsync(botClient, chatId, session, user, cancellationToken);
-                    break;
-
-                case CallbackTemplateSelect:
-                    await HandleTemplateSelectedAsync(botClient, reminderService, chatId, parts, session, cancellationToken);
-                    break;
-
-                case CallbackTemplateDelay:
-                    await HandleTemplateDelayCallbackAsync(botClient, reminderService, user, chatId, parts, session, cancellationToken);
-                    break;
-
-                case CallbackTemplateRepeat:
-                    await HandleTemplateRepeatCallbackAsync(botClient, reminderService, user, chatId, parts, session, cancellationToken);
-                    break;
-
-                case CallbackCustomDelay:
-                    await HandleCustomDelayCallbackAsync(botClient, reminderService, user, chatId, parts, session, cancellationToken);
-                    break;
-
-                case CallbackCustomRepeat:
-                    await HandleCustomRepeatCallbackAsync(botClient, reminderService, user, chatId, parts, session, cancellationToken);
-                    break;
-
-                case CallbackRemindersList:
-                    session.Reset();
-                    await botClient.AnswerCallbackQuery(callbackQuery.Id, cancellationToken: cancellationToken);
-                    await ShowReminderListAsync(botClient, reminderService, user, chatId, session, cancellationToken);
-                    return;
-
-                case CallbackRemindersTemplates:
-                    session.Reset();
-                    await ShowReminderTemplatesAsync(botClient, reminderService, chatId, session, cancellationToken);
-                    break;
-
-                case CallbackCustomNew:
-                    await HandleCustomStartAsync(botClient, chatId, session, cancellationToken);
-                    break;
-
-                case CallbackRemindersDisable:
-                    await HandleDisableReminderCallbackAsync(botClient, reminderService, user, chatId, parts, session, cancellationToken);
-                    break;
-
-                case CallbackSettingsTimezone:
-                    await ShowTimezoneMenuAsync(botClient, chatId, session, user, cancellationToken);
-                    break;
-
-                case CallbackSettingsTimezoneSelect:
-                    await HandleTimezoneSelectAsync(botClient, userService, user, chatId, parts, session, cancellationToken);
-                    break;
-
-                case CallbackSettingsTimezoneManual:
-                    await StartManualTimezoneInputAsync(botClient, chatId, session, cancellationToken);
-                    break;
-
-                default:
-                    await botClient.AnswerCallbackQuery(callbackQuery.Id, text: "Неизвестное действие", cancellationToken: cancellationToken);
-                    return;
-            }
-
-            await botClient.AnswerCallbackQuery(callbackQuery.Id, cancellationToken: cancellationToken);
-        }
-        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
-        {
-            _logger.LogError(ex, "Ошибка при обработке callbackData {Data}", data);
-            await botClient.AnswerCallbackQuery(callbackQuery.Id, text: "Произошла ошибка", cancellationToken: cancellationToken);
+            await context.AnswerCallbackAsync("Неизвестное действие");
         }
     }
 
     private ConversationContext GetSession(long chatId)
         => _sessions.GetOrAdd(chatId, _ => new ConversationContext());
-
-    private async Task SendMainMenuAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CancellationToken cancellationToken, string? messageText = null)
-    {
-        var markup = new InlineKeyboardMarkup(new[]
-        {
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("🔔 Напоминания", CallbackMainReminders)
-            },
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("🥗 Питание", CallbackMainNutrition)
-            },
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("⚙️ Настройки", CallbackMainSettings)
-            }
-        });
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        var text = messageText ?? "Выбери раздел:";
-        await SendTrackedMessageAsync(botClient, chatId, session, text, replyMarkup: markup, cancellationToken: cancellationToken);
-    }
-
-    private async Task ShowReminderDashboardAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, ConversationContext session, CancellationToken cancellationToken)
-    {
-        session.Flow = ConversationFlow.Template;
-        session.Stage = ConversationStage.None;
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-
-        var markup = new InlineKeyboardMarkup(new[]
-        {
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("📋 Активные", CallbackRemindersList)
-            },
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("🧰 Кастом", CallbackCustomNew)
-            },
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("📚 Готовые шаблоны", CallbackRemindersTemplates)
-            },
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("↩️ Назад", CallbackMenu)
-            }
-        });
-
-        var userTz = user.TimeZoneId ?? "UTC";
-        var message = $"Выбери действие с напоминаниями.\nТекущая таймзона: {userTz}.";
-
-        await SendTrackedMessageAsync(botClient, chatId, session, message, replyMarkup: markup, cancellationToken: cancellationToken);
-    }
-
-    private async Task ShowNutritionStubAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CancellationToken cancellationToken)
-    {
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            "Раздел \"Питание\" в разработке. Следи за обновлениями!",
-            replyMarkup: BuildBackToMenuKeyboard(),
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task ShowSettingsMenuAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CoreUser user, CancellationToken cancellationToken)
-    {
-        session.Stage = ConversationStage.None;
-        session.ExpectManualInput = false;
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-
-        var currentTz = user.TimeZoneId ?? "не задана";
-        var markup = new InlineKeyboardMarkup(new[]
-        {
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("🌍 Таймзона", CallbackSettingsTimezone)
-            },
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("↩️ В меню", CallbackMenu)
-            }
-        });
-
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            $"⚙️ Настройки\nТекущая таймзона: {currentTz}",
-            replyMarkup: markup,
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task ShowReminderTemplatesAsync(ITelegramBotClient botClient, ReminderService reminderService, long chatId, ConversationContext session, CancellationToken cancellationToken)
-    {
-        session.Stage = ConversationStage.None;
-        session.ExpectManualInput = false;
-
-        var templates = await reminderService.GetReminderTemplatesAsync(cancellationToken);
-
-        var rows = new List<List<InlineKeyboardButton>>();
-        foreach (var chunk in templates.Chunk(2))
-        {
-            rows.Add(chunk
-                .Select(t => InlineKeyboardButton.WithCallbackData(t.Title, $"{CallbackTemplateSelect}:{t.Code}"))
-                .ToList());
-        }
-
-        rows.Add(new List<InlineKeyboardButton>
-        {
-            InlineKeyboardButton.WithCallbackData("🧰 Кастом", CallbackCustomNew)
-        });
-
-        rows.Add(new List<InlineKeyboardButton>
-        {
-            InlineKeyboardButton.WithCallbackData("↩️ Назад", CallbackMainReminders)
-        });
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            "Выбери шаблон напоминания:",
-            replyMarkup: new InlineKeyboardMarkup(rows),
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task ShowTimezoneMenuAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CoreUser user, CancellationToken cancellationToken)
-    {
-        session.Stage = ConversationStage.None;
-        session.ExpectManualInput = false;
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-
-        var rows = PopularTimeZoneIds
-            .Select(tz => new List<InlineKeyboardButton>
-            {
-                InlineKeyboardButton.WithCallbackData(tz, $"{CallbackSettingsTimezoneSelect}:{tz}")
-            })
-            .ToList();
-
-        rows.Add(new List<InlineKeyboardButton>
-        {
-            InlineKeyboardButton.WithCallbackData("🔢 Ввести вручную", CallbackSettingsTimezoneManual)
-        });
-
-        rows.Add(new List<InlineKeyboardButton>
-        {
-            InlineKeyboardButton.WithCallbackData("↩️ Назад", CallbackMainSettings)
-        });
-
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            "Выбери таймзону или введи вручную (например, Europe/Moscow)",
-            replyMarkup: new InlineKeyboardMarkup(rows),
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task HandleTimezoneSelectAsync(ITelegramBotClient botClient, UserService userService, CoreUser user, long chatId, string[] parts, ConversationContext session, CancellationToken cancellationToken)
-    {
-        if (parts.Length < 2)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session,
-                "Не удалось определить таймзону.",
-                cancellationToken: cancellationToken);
-            return;
-        }
-
-        var tzCandidate = parts[1];
-        if (!TimeZoneHelper.TryResolve(tzCandidate, out var timeZoneInfo))
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session,
-                "Не удалось распознать таймзону. Попробуй снова.",
-                cancellationToken: cancellationToken);
-            return;
-        }
-
-        await userService.SetUserTimeZoneAsync(user, timeZoneInfo.Id, cancellationToken);
-        user.TimeZoneId = timeZoneInfo.Id;
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            $"Таймзона обновлена на {timeZoneInfo.Id}.",
-            replyMarkup: BuildBackToSettingsKeyboard(),
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task StartManualTimezoneInputAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CancellationToken cancellationToken)
-    {
-        session.Stage = ConversationStage.AwaitingTimeZoneManual;
-        session.ExpectManualInput = true;
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            "Введи идентификатор таймзоны (например, Europe/Moscow).",
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task ShowReminderListAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, ConversationContext session, CancellationToken cancellationToken)
-    {
-        var reminders = await reminderService.GetActiveRemindersForUserAsync(user.Id, cancellationToken);
-
-        var timeZoneInfo = TimeZoneHelper.Resolve(user.TimeZoneId);
-
-        if (reminders.Count == 0)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session,
-                "Активных напоминаний нет.",
-                replyMarkup: BuildBackToRemindersKeyboard(),
-                cancellationToken: cancellationToken);
-            return;
-        }
-
-        var lines = reminders.Select((reminder, index) => BuildReminderSummary(reminder, index + 1, timeZoneInfo));
-        var text = "📋 Активные напоминания:\n" + string.Join("\n", lines);
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            text,
-            replyMarkup: BuildReminderListKeyboard(reminders),
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task HandleTemplateSelectedAsync(ITelegramBotClient botClient, ReminderService reminderService, long chatId, string[] parts, ConversationContext session, CancellationToken cancellationToken)
-    {
-        if (parts.Length < 2)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Не удалось определить шаблон.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        var code = parts[1];
-        var template = await reminderService.GetTemplateByCodeAsync(code, cancellationToken);
-        if (template is null)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Шаблон не найден.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        session.Reset();
-        session.Flow = ConversationFlow.Template;
-        session.Stage = ConversationStage.AwaitingFirstDelayMinutes;
-        session.TemplateCode = template.Code;
-        session.TemplateId = template.Id;
-        session.TemplateTitle = template.Title;
-        session.TemplateDefaultRepeat = template.DefaultRepeatIntervalMinutes;
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            $"Через сколько минут прислать напоминание \"{template.Title}\"?",
-            replyMarkup: BuildDelayKeyboard(CallbackTemplateDelay, template.Code),
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task HandleTemplateDelayCallbackAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, string[] parts, ConversationContext session, CancellationToken cancellationToken)
-    {
-        if (parts.Length < 3)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Не удалось обработать выбранный интервал.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        var code = parts[1];
-        if (!string.Equals(session.TemplateCode, code, StringComparison.Ordinal))
-        {
-            var template = await reminderService.GetTemplateByCodeAsync(code, cancellationToken);
-            if (template is null)
-            {
-                await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-                await SendTrackedMessageAsync(botClient, chatId, session, "Шаблон не найден.", cancellationToken: cancellationToken);
-                return;
-            }
-
-            session.Reset();
-            session.Flow = ConversationFlow.Template;
-            session.Stage = ConversationStage.AwaitingFirstDelayMinutes;
-            session.TemplateCode = template.Code;
-            session.TemplateId = template.Id;
-            session.TemplateTitle = template.Title;
-            session.TemplateDefaultRepeat = template.DefaultRepeatIntervalMinutes;
-        }
-
-        var value = parts[2];
-        if (value.Equals("manual", StringComparison.Ordinal))
-        {
-            session.Stage = ConversationStage.AwaitingFirstDelayMinutes;
-            session.ExpectManualInput = true;
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session,
-                "Введи число минут (минимум 1). Если передумал, отправь /cancel.",
-                cancellationToken: cancellationToken);
-            return;
-        }
-
-        if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var minutes) || minutes < 1)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Нужно указать положительное число минут.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        session.FirstDelayMinutes = minutes;
-        session.Stage = ConversationStage.AwaitingRepeatMinutes;
-        session.ExpectManualInput = false;
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            "Как часто повторять напоминание? 0 — без повтора.",
-            replyMarkup: BuildRepeatKeyboard(CallbackTemplateRepeat, session.TemplateCode!, session.TemplateDefaultRepeat),
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task HandleTemplateRepeatCallbackAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, string[] parts, ConversationContext session, CancellationToken cancellationToken)
-    {
-        if (session.FirstDelayMinutes is null)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Сначала выбери время первого напоминания.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        if (parts.Length < 3)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Не удалось обработать повтор.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        var value = parts[2];
-        if (value.Equals("manual", StringComparison.Ordinal))
-        {
-            session.Stage = ConversationStage.AwaitingRepeatMinutes;
-            session.ExpectManualInput = true;
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session,
-                "Введи число минут для повтора (0 — без повтора). Если передумал, отправь /cancel.",
-                cancellationToken: cancellationToken);
-            return;
-        }
-
-        int? repeatMinutes = value switch
-        {
-            "default" when session.TemplateDefaultRepeat.HasValue => session.TemplateDefaultRepeat,
-            _ when int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) => parsed,
-            _ => null
-        };
-
-        if (repeatMinutes is null || repeatMinutes < 0)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Некорректное значение повтора.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        await FinalizeReminderAsync(botClient, reminderService, user, chatId, session, repeatMinutes, cancellationToken);
-    }
-
-    private Task HandleCustomStartAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CancellationToken cancellationToken)
-    {
-        session.Reset();
-        session.Flow = ConversationFlow.Custom;
-        session.Stage = ConversationStage.AwaitingCustomMessage;
-        session.ExpectManualInput = true;
-
-        return SendTrackedMessageAsync(botClient, chatId, session,
-            "Введи текст напоминания.",
-            cancellationToken: cancellationToken);
-    }
-
-    private Task HandleCustomMessageAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, string text, ConversationContext session, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return SendTrackedMessageAsync(botClient, chatId, session, "Напоминание не может быть пустым.", cancellationToken: cancellationToken);
-        }
-
-        session.CustomMessage = text;
-        session.Stage = ConversationStage.AwaitingFirstDelayMinutes;
-        session.ExpectManualInput = false;
-
-        return SendTrackedMessageAsync(botClient, chatId, session,
-            "Через сколько минут прислать напоминание?",
-            replyMarkup: BuildDelayKeyboard(CallbackCustomDelay, "custom"),
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task HandleCustomDelayCallbackAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, string[] parts, ConversationContext session, CancellationToken cancellationToken)
-    {
-        if (session.Flow != ConversationFlow.Custom || session.CustomMessage is null)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Сначала введи текст напоминания.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        if (parts.Length < 3)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Не удалось обработать выбранный интервал.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        var value = parts[2];
-        if (value.Equals("manual", StringComparison.Ordinal))
-        {
-            session.Stage = ConversationStage.AwaitingFirstDelayMinutes;
-            session.ExpectManualInput = true;
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session,
-                "Введи число минут до первого напоминания (минимум 1).",
-                cancellationToken: cancellationToken);
-            return;
-        }
-
-        if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var minutes) || minutes < 1)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Нужно указать положительное число минут.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        session.FirstDelayMinutes = minutes;
-        session.Stage = ConversationStage.AwaitingRepeatMinutes;
-        session.ExpectManualInput = false;
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            "Как часто повторять? 0 — без повтора.",
-            replyMarkup: BuildRepeatKeyboard(CallbackCustomRepeat, "custom", null),
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task HandleCustomRepeatCallbackAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, string[] parts, ConversationContext session, CancellationToken cancellationToken)
-    {
-        if (session.FirstDelayMinutes is null)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Сначала укажи время первого напоминания.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        if (parts.Length < 3)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Не удалось обработать повтор.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        var value = parts[2];
-        if (value.Equals("manual", StringComparison.Ordinal))
-        {
-            session.Stage = ConversationStage.AwaitingRepeatMinutes;
-            session.ExpectManualInput = true;
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session,
-                "Введи число минут для повтора (0 — без повтора).",
-                cancellationToken: cancellationToken);
-            return;
-        }
-
-        if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var repeat) || repeat < 0)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Нужно указать неотрицательное число.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        await FinalizeReminderAsync(botClient, reminderService, user, chatId, session, repeat, cancellationToken);
-    }
-
-    private async Task HandleManualDelayAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, string text, ConversationContext session, CancellationToken cancellationToken)
-    {
-        if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var minutes) || minutes < 1)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Нужно указать положительное число минут.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        session.FirstDelayMinutes = minutes;
-        session.ExpectManualInput = false;
-        session.Stage = ConversationStage.AwaitingRepeatMinutes;
-
-        var repeatPrefix = session.Flow == ConversationFlow.Template ? CallbackTemplateRepeat : CallbackCustomRepeat;
-        var code = session.Flow == ConversationFlow.Template ? session.TemplateCode ?? "custom" : "custom";
-        var defaultRepeat = session.Flow == ConversationFlow.Template ? session.TemplateDefaultRepeat : null;
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            "Как часто повторять напоминание? 0 — без повтора.",
-            replyMarkup: BuildRepeatKeyboard(repeatPrefix, code, defaultRepeat),
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task HandleManualRepeatAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, string text, ConversationContext session, CancellationToken cancellationToken)
-    {
-        if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var repeat) || repeat < 0)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Нужно указать неотрицательное число.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        await FinalizeReminderAsync(botClient, reminderService, user, chatId, session, repeat, cancellationToken);
-    }
-
-    private async Task HandleManualTimeZoneAsync(ITelegramBotClient botClient, UserService userService, CoreUser user, long chatId, string text, ConversationContext session, CancellationToken cancellationToken)
-    {
-        var candidate = text.Trim();
-        if (!TimeZoneHelper.TryResolve(candidate, out var timeZoneInfo))
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session,
-                "Не удалось распознать таймзону. Попробуй снова или выбери из списка.",
-                replyMarkup: BuildBackToSettingsKeyboard(),
-                cancellationToken: cancellationToken);
-            return;
-        }
-
-        await userService.SetUserTimeZoneAsync(user, timeZoneInfo.Id, cancellationToken);
-        user.TimeZoneId = timeZoneInfo.Id;
-
-        session.Stage = ConversationStage.None;
-        session.ExpectManualInput = false;
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            $"Таймзона обновлена на {timeZoneInfo.Id}.",
-            replyMarkup: BuildBackToSettingsKeyboard(),
-            cancellationToken: cancellationToken);
-    }
-
-    private async Task HandleDisableReminderCallbackAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, string[] parts, ConversationContext session, CancellationToken cancellationToken)
-    {
-        if (parts.Length < 2)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Не удалось определить напоминание.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        if (!Guid.TryParseExact(parts[1], "N", out var reminderId))
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Некорректный идентификатор напоминания.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        var success = await reminderService.DeactivateReminderAsync(reminderId, user.Id, cancellationToken);
-        if (success)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Напоминание отключено.", cancellationToken: cancellationToken);
-        }
-        else
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Напоминание уже отключено или не найдено.", cancellationToken: cancellationToken);
-        }
-
-        await ShowReminderListAsync(botClient, reminderService, user, chatId, session, cancellationToken);
-    }
-
-    private async Task FinalizeReminderAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, ConversationContext session, int? repeatMinutes, CancellationToken cancellationToken)
-    {
-        if (session.FirstDelayMinutes is null)
-        {
-            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-            await SendTrackedMessageAsync(botClient, chatId, session, "Сначала выбери время первого напоминания.", cancellationToken: cancellationToken);
-            return;
-        }
-
-        var messageText = session.Flow switch
-        {
-            ConversationFlow.Template => session.TemplateTitle ?? "Напоминание",
-            ConversationFlow.Custom => session.CustomMessage ?? "Напоминание",
-            _ => session.CustomMessage ?? session.TemplateTitle ?? "Напоминание"
-        };
-
-        var scheduledAt = DateTime.UtcNow.AddMinutes(session.FirstDelayMinutes.Value);
-        var repeatValue = repeatMinutes is > 0 ? repeatMinutes : null;
-        var templateId = session.Flow == ConversationFlow.Template ? session.TemplateId : null;
-
-        var reminder = await reminderService.ScheduleReminderAsync(
-            user.Id,
-            messageText,
-            scheduledAt,
-            repeatValue,
-            templateId,
-            cancellationToken);
-
-        session.Reset();
-
-        var userTimeZone = TimeZoneHelper.Resolve(user.TimeZoneId);
-        var nextTriggerLocal = TimeZoneHelper.ConvertUtcToUserTime(reminder.NextTriggerAt, userTimeZone);
-        var repeatText = repeatValue.HasValue
-            ? $" Повтор каждые {FormatInterval(repeatValue.Value)}."
-            : " Без повтора.";
-
-        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        await SendTrackedMessageAsync(botClient, chatId, session,
-            $"Готово! Напоминание \"{messageText}\" запланировано на {nextTriggerLocal:dd.MM HH:mm} ({userTimeZone.Id})." + repeatText,
-            replyMarkup: BuildBackToMenuKeyboard(),
-            cancellationToken: cancellationToken);
-    }
-
-    private static InlineKeyboardMarkup BuildDelayKeyboard(string prefix, string code)
-    {
-        var rows = new List<List<InlineKeyboardButton>>
-        {
-            new()
-            {
-                InlineKeyboardButton.WithCallbackData("15 мин", $"{prefix}:{code}:15"),
-                InlineKeyboardButton.WithCallbackData("30 мин", $"{prefix}:{code}:30")
-            },
-            new()
-            {
-                InlineKeyboardButton.WithCallbackData("1 час", $"{prefix}:{code}:60"),
-                InlineKeyboardButton.WithCallbackData("3 часа", $"{prefix}:{code}:180")
-            },
-            new()
-            {
-                InlineKeyboardButton.WithCallbackData("🔢 Ввести вручную", $"{prefix}:{code}:manual")
-            },
-            new()
-            {
-                InlineKeyboardButton.WithCallbackData("↩️ В меню", CallbackMenu)
-            }
-        };
-
-        return new InlineKeyboardMarkup(rows);
-    }
-
-    private InlineKeyboardMarkup BuildRepeatKeyboard(string prefix, string code, int? defaultRepeat)
-    {
-        var rows = new List<List<InlineKeyboardButton>>();
-
-        if (defaultRepeat.HasValue)
-        {
-            rows.Add(new List<InlineKeyboardButton>
-            {
-                InlineKeyboardButton.WithCallbackData("По умолчанию", $"{prefix}:{code}:default")
-            });
-        }
-
-        rows.Add(new List<InlineKeyboardButton>
-        {
-            InlineKeyboardButton.WithCallbackData("Без повтора", $"{prefix}:{code}:0"),
-            InlineKeyboardButton.WithCallbackData("Каждые 30 мин", $"{prefix}:{code}:30")
-        });
-
-        rows.Add(new List<InlineKeyboardButton>
-        {
-            InlineKeyboardButton.WithCallbackData("Каждый час", $"{prefix}:{code}:60"),
-            InlineKeyboardButton.WithCallbackData("Каждые 2 часа", $"{prefix}:{code}:120")
-        });
-
-        rows.Add(new List<InlineKeyboardButton>
-        {
-            InlineKeyboardButton.WithCallbackData("🔢 Ввести вручную", $"{prefix}:{code}:manual")
-        });
-
-
-        rows.Add(new List<InlineKeyboardButton>
-        {
-            InlineKeyboardButton.WithCallbackData("↩️ К напоминаниям", CallbackMainReminders)
-        });
-
-        return new InlineKeyboardMarkup(rows);
-    }
-
-    private InlineKeyboardMarkup BuildReminderListKeyboard(IReadOnlyList<Reminder> reminders)
-    {
-        var rows = new List<List<InlineKeyboardButton>>();
-
-        foreach (var reminder in reminders)
-        {
-            rows.Add(new List<InlineKeyboardButton>
-            {
-                InlineKeyboardButton.WithCallbackData(
-                    $"❌ {GetReminderDisplayName(reminder)}",
-                    $"{CallbackRemindersDisable}:{reminder.Id:N}")
-            });
-        }
-
-        rows.Add(new List<InlineKeyboardButton>
-        {
-            InlineKeyboardButton.WithCallbackData("↩️ К напоминаниям", CallbackMainReminders)
-        });
-
-        return new InlineKeyboardMarkup(rows);
-    }
 
     protected virtual async Task<Message> SendTrackedMessageAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, string text, InlineKeyboardMarkup? replyMarkup = null, CancellationToken cancellationToken = default)
     {
@@ -992,109 +171,5 @@ public class TelegramUpdateHandler : IUpdateHandler
             _logger.LogWarning(ex, "Ошибка при удалении сообщения {MessageId} в чате {ChatId}", messageId, chatId);
             return false;
         }
-    }
-
-    private static InlineKeyboardMarkup BuildBackToMenuKeyboard()
-        => new(new[]
-        {
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("↩️ В меню", CallbackMenu)
-            }
-        });
-
-    private static InlineKeyboardMarkup BuildBackToRemindersKeyboard()
-        => new(new[]
-        {
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("↩️ К напоминаниям", CallbackMainReminders)
-            }
-        });
-
-    private static InlineKeyboardMarkup BuildBackToSettingsKeyboard()
-        => new(new[]
-        {
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("↩️ К настройкам", CallbackMainSettings)
-            }
-        });
-
-    private static string BuildReminderSummary(Reminder reminder, int index, TimeZoneInfo timeZone)
-    {
-        var title = reminder.Template?.Title ?? reminder.Message;
-        var next = TimeZoneHelper.ConvertUtcToUserTime(reminder.NextTriggerAt, timeZone);
-        var repeatPart = reminder.RepeatIntervalMinutes is { } interval and > 0
-            ? $"повтор каждые {FormatInterval(interval)}"
-            : "без повтора";
-
-        return $"{index}. {title} — {next:dd.MM HH:mm}, {repeatPart}";
-    }
-
-    private static string GetReminderDisplayName(Reminder reminder)
-    {
-        var title = reminder.Template?.Title ?? reminder.Message;
-        return title.Length > 32 ? title[..29] + "…" : title;
-    }
-
-    private static string FormatInterval(int minutes)
-    {
-        if (minutes % 1440 == 0)
-        {
-            var days = minutes / 1440;
-            return days == 1 ? "1 день" : $"{days} дн.";
-        }
-
-        if (minutes % 60 == 0)
-        {
-            var hours = minutes / 60;
-            return hours == 1 ? "1 час" : $"{hours} ч";
-        }
-
-        return $"{minutes} мин";
-    }
-
-    protected sealed class ConversationContext
-    {
-        public ConversationFlow Flow { get; set; } = ConversationFlow.None;
-        public ConversationStage Stage { get; set; } = ConversationStage.None;
-        public string? TemplateCode { get; set; }
-        public Guid? TemplateId { get; set; }
-        public string? TemplateTitle { get; set; }
-        public int? TemplateDefaultRepeat { get; set; }
-        public string? CustomMessage { get; set; }
-        public int? FirstDelayMinutes { get; set; }
-        public bool ExpectManualInput { get; set; }
-        public int? LastBotMessageId { get; set; }
-
-        public void Reset()
-        {
-            Flow = ConversationFlow.None;
-            Stage = ConversationStage.None;
-            TemplateCode = null;
-            TemplateId = null;
-            TemplateTitle = null;
-            TemplateDefaultRepeat = null;
-            CustomMessage = null;
-            FirstDelayMinutes = null;
-            ExpectManualInput = false;
-        }
-    }
-
-    protected enum ConversationFlow
-    {
-        None,
-        Template,
-        Custom
-    }
-
-    protected enum ConversationStage
-    {
-        None,
-        AwaitingCustomMessage,
-        AwaitingFirstDelayMinutes,
-        AwaitingRepeatMinutes,
-        AwaitingTimeZoneManual
     }
 }

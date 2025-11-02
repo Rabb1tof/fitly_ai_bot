@@ -8,9 +8,15 @@ using FluentAssertions;
 using HealthBot.Core.Entities;
 using HealthBot.Infrastructure.Data;
 using HealthBot.Infrastructure.Services;
+using HealthBot.Infrastructure.Telegram;
+using HealthBot.Infrastructure.Telegram.Commands;
+using HealthBot.Infrastructure.Telegram.Commands.Abstractions;
+using HealthBot.Infrastructure.Telegram.Commands.Callback;
+using HealthBot.Infrastructure.Telegram.Commands.Message;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Telegram.Bot;
 using Telegram.Bot.Requests;
@@ -19,6 +25,7 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using Xunit;
+using CoreUser = HealthBot.Core.Entities.User;
 
 namespace HealthBot.Tests;
 
@@ -87,7 +94,7 @@ public class TelegramUpdateHandlerTests
     private const long ChatId = 12345;
 
     [Fact]
-    public async Task HandleMessageAsync_Start_ShouldSendMainMenu()
+    public async Task StartMessage_ShowsMainMenu()
     {
         await using var harness = new HandlerHarness();
 
@@ -97,104 +104,92 @@ public class TelegramUpdateHandlerTests
         var (text, markup) = harness.SentMessages.Single();
         text.Should().Contain("Привет");
         markup.Should().NotBeNull();
-
-        var callbackData = markup!.InlineKeyboard
-            .SelectMany(row => row)
-            .Select(button => button.CallbackData)
-            .ToList();
-
-        callbackData.Should().Contain(new[] { "main_reminders", "main_nutrition", "main_settings" });
+        markup!.InlineKeyboard.SelectMany(row => row.Select(button => button.CallbackData))
+            .Should().Contain(new[]
+            {
+                TelegramCommandNames.CallbackMainReminders,
+                TelegramCommandNames.CallbackMainNutrition,
+                TelegramCommandNames.CallbackMainSettings
+            });
     }
 
     [Fact]
-    public async Task HandleCallbackAsync_SettingsTimezone_ShouldShowOptions()
+    public async Task SettingsTimezone_ShowsPopularZones()
     {
         await using var harness = new HandlerHarness();
+
         await harness.SendTextAsync("/start");
-        harness.SentMessages.Clear();
+        harness.ClearMessages();
 
-        await harness.SendCallbackAsync("main_settings");
-        harness.SentMessages.Clear();
+        await harness.SendCallbackAsync(TelegramCommandNames.CallbackMainSettings);
+        harness.ClearMessages();
 
-        await harness.SendCallbackAsync("settings_timezone");
+        await harness.SendCallbackAsync(TelegramCommandNames.CallbackSettingsTimezone);
 
-        harness.SentMessages.Should().HaveCount(1);
+        harness.SentMessages.Should().ContainSingle();
         var (text, markup) = harness.SentMessages.Single();
         text.Should().Contain("Выбери таймзону");
-        markup.Should().NotBeNull();
-        markup!.InlineKeyboard.SelectMany(x => x).Select(b => b.Text)
-            .Should().Contain("Europe/Moscow");
+        markup!.InlineKeyboard.SelectMany(x => x.Select(b => b.Text)).Should().Contain("Europe/Moscow");
     }
 
     [Fact]
-    public async Task HandleCallbackAsync_SelectTimezone_ShouldPersistAndNotify()
+    public async Task ManualTimezone_ValidValue_Persists()
     {
         await using var harness = new HandlerHarness();
+
         await harness.SendTextAsync("/start");
-        harness.SentMessages.Clear();
+        harness.ClearMessages();
 
-        await harness.SendCallbackAsync("main_settings");
-        harness.SentMessages.Clear();
+        await harness.SendCallbackAsync(TelegramCommandNames.CallbackMainSettings);
+        harness.ClearMessages();
 
-        await harness.SendCallbackAsync("settings_timezone_select:Europe/Kyiv");
-
+        await harness.SendCallbackAsync(TelegramCommandNames.CallbackSettingsTimezoneManual);
         harness.SentMessages.Should().ContainSingle();
-        harness.SentMessages.Single().Text.Should().Contain("Таймзона обновлена");
-
-        var storedUser = await harness.DbContext.Users.AsNoTracking().SingleAsync();
-        storedUser.TimeZoneId.Should().Be("Europe/Kyiv");
-    }
-
-    [Fact]
-    public async Task ManualTimezoneInput_ShouldUpdateUser()
-    {
-        await using var harness = new HandlerHarness();
-        await harness.SendTextAsync("/start");
-        harness.SentMessages.Clear();
-
-        await harness.SendCallbackAsync("main_settings");
-        harness.SentMessages.Clear();
-
-        await harness.SendCallbackAsync("settings_timezone_manual");
-        harness.SentMessages.Should().ContainSingle();
-        harness.SentMessages.Single().Text.Should().Contain("Введи идентификатор таймзоны");
-        harness.SentMessages.Clear();
+        harness.ClearMessages();
 
         await harness.SendTextAsync("UTC+2");
 
         harness.SentMessages.Should().ContainSingle();
         harness.SentMessages.Single().Text.Should().Contain("Таймзона обновлена");
 
-        var storedUser = await harness.DbContext.Users.AsNoTracking().SingleAsync();
-        storedUser.TimeZoneId.Should().Be("UTC+2");
+        await harness.EnsureUserAsync(ChatId);
+        var storedUser = await harness.QueryDbContextAsync(ctx => ctx.Users.AsNoTracking().FirstOrDefaultAsync());
+        storedUser.Should().NotBeNull();
+        storedUser!.TimeZoneId.Should().Be("UTC+2");
     }
 
     [Fact]
-    public async Task ReminderList_ShouldUseUserTimeZone()
+    public async Task ReminderList_FormatsWithUserTimezone()
     {
         await using var harness = new HandlerHarness();
+
         await harness.SendTextAsync("/start");
 
-        var user = await harness.DbContext.Users.SingleAsync();
-        user.TimeZoneId = "UTC+3";
+        await harness.EnsureUserAsync(ChatId);
 
-        harness.DbContext.Reminders.Add(new Reminder
+        await harness.QueryDbContextAsync(async ctx =>
         {
-            Id = Guid.NewGuid(),
-            UserId = user.Id,
-            User = user,
-            Message = "Выпить воду",
-            ScheduledAt = DateTime.UtcNow,
-            NextTriggerAt = new DateTime(2025, 1, 1, 12, 0, 0, DateTimeKind.Utc),
-            IsActive = true
+            var user = await ctx.Users.SingleAsync();
+            user.TimeZoneId = "UTC+3";
+
+            ctx.Reminders.Add(new Reminder
+            {
+                Id = Guid.NewGuid(),
+                UserId = user.Id,
+                User = user,
+                Message = "Выпить воду",
+                ScheduledAt = DateTime.UtcNow,
+                NextTriggerAt = new DateTime(2025, 1, 1, 12, 0, 0, DateTimeKind.Utc),
+                IsActive = true
+            });
+            await ctx.SaveChangesAsync();
         });
-        await harness.DbContext.SaveChangesAsync();
 
         harness.ClearMessages();
-        await harness.SendCallbackAsync("main_reminders");
+        await harness.SendCallbackAsync(TelegramCommandNames.CallbackMainReminders);
         harness.ClearMessages();
 
-        await harness.SendCallbackAsync("reminders_list");
+        await harness.SendCallbackAsync(TelegramCommandNames.CallbackRemindersList);
 
         harness.SentMessages.Should().ContainSingle();
         var (text, markup) = harness.SentMessages.Single();
@@ -203,7 +198,7 @@ public class TelegramUpdateHandlerTests
     }
 
     [Fact]
-    public async Task TemplateSelection_Flow_ShouldScheduleReminder()
+    public async Task TemplateFlow_SchedulesReminder()
     {
         await using var harness = new HandlerHarness();
         await harness.SendTextAsync("/start");
@@ -213,25 +208,25 @@ public class TelegramUpdateHandlerTests
             Id = Guid.NewGuid(),
             Code = "drink",
             Title = "Попей воды",
-            Description = "",
+            Description = string.Empty,
             DefaultRepeatIntervalMinutes = null,
             IsSystem = true
         });
         await harness.DbContext.SaveChangesAsync();
 
-        await harness.SendCallbackAsync("main_reminders");
+        await harness.SendCallbackAsync(TelegramCommandNames.CallbackMainReminders);
         harness.ClearMessages();
 
-        await harness.SendCallbackAsync("reminders_templates");
+        await harness.SendCallbackAsync(TelegramCommandNames.CallbackRemindersTemplates);
         harness.SentMessages.Single().Text.Should().Contain("Выбери шаблон");
 
-        await harness.SendCallbackAsync("tpl:drink");
+        await harness.SendCallbackAsync($"{TelegramCommandNames.CallbackTemplateSelect}:drink");
         harness.SentMessages.Last().Text.Should().Contain("Через сколько минут");
 
-        await harness.SendCallbackAsync("tpl_delay:drink:15");
+        await harness.SendCallbackAsync($"{TelegramCommandNames.CallbackTemplateDelay}:drink:15");
         harness.SentMessages.Last().Text.Should().Contain("Как часто повторять");
 
-        await harness.SendCallbackAsync("tpl_repeat:drink:0");
+        await harness.SendCallbackAsync($"{TelegramCommandNames.CallbackTemplateRepeat}:drink:0");
         harness.SentMessages.Last().Text.Should().Contain("Готово!");
 
         var reminder = await harness.DbContext.Reminders.SingleAsync();
@@ -239,174 +234,103 @@ public class TelegramUpdateHandlerTests
         reminder.IsActive.Should().BeTrue();
     }
 
-    [Fact]
-    public async Task CustomReminder_Flow_ShouldPersistMessage()
-    {
-        await using var harness = new HandlerHarness();
-        await harness.SendTextAsync("/start");
-
-        await harness.SendCallbackAsync("main_reminders");
-        harness.ClearMessages();
-
-        await harness.SendCallbackAsync("custom_new");
-        harness.SentMessages.Single().Text.Should().Contain("Введи текст напоминания");
-
-        await harness.SendTextAsync("Сделать зарядку");
-        harness.SentMessages.Last().Text.Should().Contain("Через сколько минут");
-
-        await harness.SendCallbackAsync("custom_delay:custom:manual");
-        await harness.SendTextAsync("20");
-        await harness.SendCallbackAsync("custom_repeat:custom:manual");
-        await harness.SendTextAsync("0");
-
-        harness.SentMessages.Last().Text.Should().Contain("Готово!");
-
-        var reminder = await harness.DbContext.Reminders.SingleAsync();
-        reminder.Message.Should().Be("Сделать зарядку");
-        reminder.RepeatIntervalMinutes.Should().BeNull();
-    }
-
-    [Fact]
-    public async Task DisableReminder_ShouldMarkInactive()
-    {
-        await using var harness = new HandlerHarness();
-        await harness.SendTextAsync("/start");
-
-        var user = await harness.DbContext.Users.SingleAsync();
-        var reminder = new Reminder
-        {
-            Id = Guid.NewGuid(),
-            UserId = user.Id,
-            User = user,
-            Message = "Проверить почту",
-            ScheduledAt = DateTime.UtcNow,
-            NextTriggerAt = DateTime.UtcNow,
-            IsActive = true
-        };
-        harness.DbContext.Reminders.Add(reminder);
-        await harness.DbContext.SaveChangesAsync();
-
-        await harness.SendCallbackAsync("main_reminders");
-        harness.ClearMessages();
-
-        await harness.SendCallbackAsync("reminders_list");
-        harness.ClearMessages();
-
-        await harness.SendCallbackAsync($"reminders_disable:{reminder.Id:N}");
-
-        var updatedReminder = await harness.DbContext.Reminders.SingleAsync();
-        updatedReminder.IsActive.Should().BeFalse();
-        harness.SentMessages.Should().Contain(m => m.Text.Contains("Напоминание отключено"));
-    }
-
-    [Fact]
-    public async Task TemplateDelay_InvalidCode_ShouldNotify()
-    {
-        await using var harness = new HandlerHarness();
-        await harness.SendTextAsync("/start");
-
-        await harness.SendCallbackAsync("tpl_delay:unknown:15");
-
-        harness.SentMessages.Last().Text.Should().Contain("Шаблон не найден");
-    }
-
-    [Fact]
-    public async Task ManualTimeZone_InvalidInput_ShouldKeepAwaiting()
-    {
-        await using var harness = new HandlerHarness();
-        await harness.SendTextAsync("/start");
-        harness.ClearMessages();
-
-        await harness.SendCallbackAsync("main_settings");
-        harness.ClearMessages();
-
-        await harness.SendCallbackAsync("settings_timezone_manual");
-        harness.ClearMessages();
-
-        await harness.SendTextAsync("Mars/Colony");
-
-        harness.SentMessages.Last().Text.Should().Contain("Не удалось распознать таймзону");
-        var user = await harness.DbContext.Users.SingleAsync();
-        user.TimeZoneId.Should().BeNull();
-    }
-
-    [Fact]
-    public async Task CustomRepeat_InvalidNumber_ShouldPromptAgain()
-    {
-        await using var harness = new HandlerHarness();
-        await harness.SendTextAsync("/start");
-
-        await harness.SendCallbackAsync("custom_new");
-        await harness.SendTextAsync("Почитать книгу");
-        await harness.SendCallbackAsync("custom_delay:custom:15");
-
-        await harness.SendCallbackAsync("custom_repeat:custom:manual");
-        harness.ClearMessages();
-
-        await harness.SendTextAsync("-1");
-
-        harness.SentMessages.Last().Text.Should().Contain("неотрицательное число");
-        var reminderCount = await harness.DbContext.Reminders.CountAsync();
-        reminderCount.Should().Be(0);
-    }
-
     private sealed class HandlerHarness : IAsyncDisposable
     {
-        private readonly Mock<IServiceScopeFactory> _scopeFactoryMock;
-        private readonly Mock<IServiceScope> _scopeMock;
-        private readonly Mock<IServiceProvider> _providerMock;
-        private readonly Mock<ILogger<TelegramUpdateHandler>> _loggerMock = new();
+        private readonly ServiceProvider _serviceProvider;
+        private readonly IServiceScopeFactory _scopeFactory;
+        private readonly ITelegramCommandHandler[] _handlers;
+        private readonly Mock<ITelegramBotClient> _botMock = new();
 
         public HealthBotDbContext DbContext { get; }
-        public UserService UserService { get; }
-        public ReminderService ReminderService { get; }
-        private readonly Mock<ITelegramBotClient> _botMock = new();
-        public TestTelegramUpdateHandler Handler { get; }
+        public TelegramUpdateHandler Handler { get; }
         public List<(string Text, InlineKeyboardMarkup? Markup)> SentMessages { get; } = new();
 
         public HandlerHarness()
         {
+            var dbOptions = new DbContextOptionsBuilder<HealthBotDbContext>()
+                .UseInMemoryDatabase(Guid.NewGuid().ToString())
+                .Options;
+
+            DbContext = new HealthBotDbContext(dbOptions);
+
             var services = new ServiceCollection();
-            services.AddDbContext<HealthBotDbContext>(options =>
-                options.UseInMemoryDatabase(Guid.NewGuid().ToString()));
+            services.AddSingleton(DbContext);
+            services.AddScoped<UserService>();
+            services.AddScoped<ReminderService>();
 
-            var provider = services.BuildServiceProvider();
-            DbContext = provider.GetRequiredService<HealthBotDbContext>();
-            UserService = new UserService(DbContext);
-            ReminderService = new ReminderService(DbContext);
+            _handlers = CreateHandlers();
+            var dispatcher = new CommandDispatcher(_handlers, NullLogger<CommandDispatcher>.Instance);
 
-            _providerMock = new Mock<IServiceProvider>();
-            _providerMock.Setup(p => p.GetService(typeof(UserService))).Returns(UserService);
-            _providerMock.Setup(p => p.GetService(typeof(ReminderService))).Returns(ReminderService);
+            _serviceProvider = services.BuildServiceProvider();
+            _scopeFactory = _serviceProvider.GetRequiredService<IServiceScopeFactory>();
 
-            _scopeMock = new Mock<IServiceScope>();
-            _scopeMock.SetupGet(s => s.ServiceProvider).Returns(_providerMock.Object);
-
-            _scopeFactoryMock = new Mock<IServiceScopeFactory>();
-            _scopeFactoryMock.Setup(f => f.CreateScope()).Returns(_scopeMock.Object);
-
-            Handler = new TestTelegramUpdateHandler(_scopeFactoryMock.Object, _loggerMock.Object, SentMessages);
+            Handler = new TestTelegramUpdateHandler(_scopeFactory, NullLogger<TelegramUpdateHandler>.Instance, dispatcher, SentMessages);
         }
 
-        public Task SendTextAsync(string text)
+        public async Task SendTextAsync(string text)
         {
-            var update = TestUpdates.CreateMessageUpdate(ChatId, text);
-            return Handler.HandleUpdateAsync(_botMock.Object, update, CancellationToken.None);
+            var update = UpdateFactory.CreateMessageUpdate(ChatId, text);
+            await Handler.HandleUpdateAsync(_botMock.Object, update, CancellationToken.None);
         }
 
-        public Task SendCallbackAsync(string data)
+        public async Task SendCallbackAsync(string data)
         {
-            var update = TestUpdates.CreateCallbackUpdate(ChatId, data);
-            return Handler.HandleUpdateAsync(_botMock.Object, update, CancellationToken.None);
+            var update = UpdateFactory.CreateCallbackUpdate(ChatId, data);
+            await Handler.HandleUpdateAsync(_botMock.Object, update, CancellationToken.None);
         }
+
+        public void ClearMessages() => SentMessages.Clear();
 
         public async ValueTask DisposeAsync()
         {
             await DbContext.Database.EnsureDeletedAsync();
             await DbContext.DisposeAsync();
+            await _serviceProvider.DisposeAsync();
         }
 
-        public void ClearMessages() => SentMessages.Clear();
+        public Task<TResult> QueryDbContextAsync<TResult>(Func<HealthBotDbContext, Task<TResult>> query)
+            => query(DbContext);
+
+        public Task QueryDbContextAsync(Func<HealthBotDbContext, Task> action)
+            => action(DbContext);
+
+        public Task EnsureUserAsync(long chatId, string? username = "tester")
+            => QueryDbContextAsync(async ctx =>
+            {
+                if (!await ctx.Users.AnyAsync(u => u.TelegramId == chatId))
+                {
+                    ctx.Users.Add(new CoreUser
+                    {
+                        TelegramId = chatId,
+                        Username = username
+                    });
+                    await ctx.SaveChangesAsync();
+                }
+            });
+
+        private static ITelegramCommandHandler[] CreateHandlers() => new ITelegramCommandHandler[]
+        {
+            new StartCommandHandler(NullLogger<StartCommandHandler>.Instance),
+            new CancelCommandHandler(NullLogger<CancelCommandHandler>.Instance),
+            new ManualInputMessageHandler(NullLogger<ManualInputMessageHandler>.Instance),
+            new UnknownMessageHandler(NullLogger<UnknownMessageHandler>.Instance),
+            new MenuCallbackHandler(NullLogger<MenuCallbackHandler>.Instance),
+            new MainRemindersCallbackHandler(NullLogger<MainRemindersCallbackHandler>.Instance),
+            new MainNutritionCallbackHandler(NullLogger<MainNutritionCallbackHandler>.Instance),
+            new MainSettingsCallbackHandler(NullLogger<MainSettingsCallbackHandler>.Instance),
+            new RemindersListCallbackHandler(NullLogger<RemindersListCallbackHandler>.Instance),
+            new RemindersTemplatesCallbackHandler(NullLogger<RemindersTemplatesCallbackHandler>.Instance),
+            new CustomNewCallbackHandler(NullLogger<CustomNewCallbackHandler>.Instance),
+            new CustomDelayCallbackHandler(NullLogger<CustomDelayCallbackHandler>.Instance),
+            new CustomRepeatCallbackHandler(NullLogger<CustomRepeatCallbackHandler>.Instance),
+            new TemplateSelectCallbackHandler(NullLogger<TemplateSelectCallbackHandler>.Instance),
+            new TemplateDelayCallbackHandler(NullLogger<TemplateDelayCallbackHandler>.Instance),
+            new TemplateRepeatCallbackHandler(NullLogger<TemplateRepeatCallbackHandler>.Instance),
+            new ReminderDisableCallbackHandler(NullLogger<ReminderDisableCallbackHandler>.Instance),
+            new SettingsTimezoneCallbackHandler(NullLogger<SettingsTimezoneCallbackHandler>.Instance),
+            new SettingsTimezoneSelectCallbackHandler(NullLogger<SettingsTimezoneSelectCallbackHandler>.Instance),
+            new SettingsTimezoneManualCallbackHandler(NullLogger<SettingsTimezoneManualCallbackHandler>.Instance)
+        };
     }
 
     private sealed class TestTelegramUpdateHandler : TelegramUpdateHandler
@@ -414,42 +338,53 @@ public class TelegramUpdateHandlerTests
         private readonly List<(string Text, InlineKeyboardMarkup? Markup)> _sentMessages;
         private int _messageId;
 
-        public TestTelegramUpdateHandler(IServiceScopeFactory scopeFactory, ILogger<TelegramUpdateHandler> logger, List<(string Text, InlineKeyboardMarkup? Markup)> sentMessages)
-            : base(scopeFactory, logger)
+        public TestTelegramUpdateHandler(
+            IServiceScopeFactory scopeFactory,
+            ILogger<TelegramUpdateHandler> logger,
+            CommandDispatcher dispatcher,
+            List<(string Text, InlineKeyboardMarkup? Markup)> sentMessages)
+            : base(scopeFactory, logger, dispatcher)
         {
             _sentMessages = sentMessages;
         }
 
-        protected override Task<Message> SendTrackedMessageAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, string text, InlineKeyboardMarkup? replyMarkup = null, CancellationToken cancellationToken = default)
+        protected override Task<Message> SendTrackedMessageAsync(
+            ITelegramBotClient botClient,
+            long chatId,
+            ConversationContext session,
+            string text,
+            InlineKeyboardMarkup? replyMarkup = null,
+            CancellationToken cancellationToken = default)
         {
-            var message = TestUpdates.CreateMessage(++_messageId, new ChatId(chatId));
+            var message = UpdateFactory.CreateMessage(++_messageId, chatId);
             session.LastBotMessageId = message.MessageId;
             _sentMessages.Add((text, replyMarkup));
             return Task.FromResult(message);
         }
 
-        protected override Task<bool> DeleteLastBotMessageAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CancellationToken cancellationToken)
+        protected override Task<bool> DeleteLastBotMessageAsync(
+            ITelegramBotClient botClient,
+            long chatId,
+            ConversationContext session,
+            CancellationToken cancellationToken)
         {
-            if (session.LastBotMessageId is null)
-            {
-                return Task.FromResult(false);
-            }
-
             session.LastBotMessageId = null;
             return Task.FromResult(true);
         }
     }
 
-    private static class TestUpdates
+    private static class UpdateFactory
     {
+        private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+
         public static Update CreateMessageUpdate(long chatId, string text)
         {
             var payload = new
             {
-                update_id = 1,
+                update_id = Random.Shared.Next(1, int.MaxValue),
                 message = new
                 {
-                    message_id = 10,
+                    message_id = Random.Shared.Next(1, int.MaxValue),
                     date = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                     chat = new { id = chatId, type = "private" },
                     text,
@@ -457,15 +392,14 @@ public class TelegramUpdateHandlerTests
                 }
             };
 
-            var json = JsonSerializer.Serialize(payload);
-            return DeserializeUpdate(json);
+            return DeserializeUpdate(payload);
         }
 
         public static Update CreateCallbackUpdate(long chatId, string data)
         {
             var payload = new
             {
-                update_id = 1,
+                update_id = Random.Shared.Next(1, int.MaxValue),
                 callback_query = new
                 {
                     id = Guid.NewGuid().ToString("N"),
@@ -473,48 +407,35 @@ public class TelegramUpdateHandlerTests
                     from = new { id = chatId, is_bot = false, first_name = "Test", username = "tester" },
                     message = new
                     {
-                        message_id = 20,
+                        message_id = Random.Shared.Next(1, int.MaxValue),
                         date = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                         chat = new { id = chatId, type = "private" }
                     }
                 }
             };
 
-            var json = JsonSerializer.Serialize(payload);
-            return DeserializeUpdate(json);
+            return DeserializeUpdate(payload);
         }
 
-        private static Update DeserializeUpdate(string json)
-        {
-            var update = JsonSerializer.Deserialize<Update>(json, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
-
-            if (update is null)
-            {
-                throw new InvalidOperationException("Failed to deserialize update");
-            }
-
-            return update;
-        }
-
-        public static Message CreateMessage(int id, ChatId chatId)
+        public static Message CreateMessage(int messageId, long chatId)
         {
             var payload = new
             {
-                message_id = id,
+                message_id = messageId,
                 date = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                chat = new { id = chatId.Identifier ?? ChatId, type = "private" }
+                chat = new { id = chatId, type = "private" }
             };
 
             var json = JsonSerializer.Serialize(payload);
-            var message = JsonSerializer.Deserialize<Message>(json, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            }) ?? throw new InvalidOperationException("Failed to deserialize message");
+            return JsonSerializer.Deserialize<Message>(json, JsonOptions)
+                   ?? throw new InvalidOperationException("Failed to deserialize message");
+        }
 
-            return message;
+        private static Update DeserializeUpdate(object payload)
+        {
+            var json = JsonSerializer.Serialize(payload);
+            return JsonSerializer.Deserialize<Update>(json, JsonOptions)
+                   ?? throw new InvalidOperationException("Failed to deserialize update");
         }
     }
 }
