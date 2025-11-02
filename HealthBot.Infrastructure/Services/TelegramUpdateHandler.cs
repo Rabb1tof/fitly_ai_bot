@@ -955,20 +955,20 @@ public class TelegramUpdateHandler : IUpdateHandler
 
         rows.Add(new List<InlineKeyboardButton>
         {
-            InlineKeyboardButton.WithCallbackData("↩️ В меню", CallbackMenu)
+            InlineKeyboardButton.WithCallbackData("↩️ К напоминаниям", CallbackMainReminders)
         });
 
         return new InlineKeyboardMarkup(rows);
     }
 
-    private async Task<Message> SendTrackedMessageAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, string text, InlineKeyboardMarkup? replyMarkup = null, CancellationToken cancellationToken = default)
+    protected virtual async Task<Message> SendTrackedMessageAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, string text, InlineKeyboardMarkup? replyMarkup = null, CancellationToken cancellationToken = default)
     {
         var message = await botClient.SendMessage(new ChatId(chatId), text, replyMarkup: replyMarkup, cancellationToken: cancellationToken);
         session.LastBotMessageId = message.MessageId;
         return message;
     }
 
-    private async Task<bool> DeleteLastBotMessageAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CancellationToken cancellationToken)
+    protected virtual async Task<bool> DeleteLastBotMessageAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CancellationToken cancellationToken)
     {
         if (session.LastBotMessageId is not int messageId)
         {
@@ -1055,7 +1055,7 @@ public class TelegramUpdateHandler : IUpdateHandler
         return $"{minutes} мин";
     }
 
-    private sealed class ConversationContext
+    protected sealed class ConversationContext
     {
         public ConversationFlow Flow { get; set; } = ConversationFlow.None;
         public ConversationStage Stage { get; set; } = ConversationStage.None;
@@ -1082,14 +1082,14 @@ public class TelegramUpdateHandler : IUpdateHandler
         }
     }
 
-    private enum ConversationFlow
+    protected enum ConversationFlow
     {
         None,
         Template,
         Custom
     }
 
-    private enum ConversationStage
+    protected enum ConversationStage
     {
         None,
         AwaitingCustomMessage,
