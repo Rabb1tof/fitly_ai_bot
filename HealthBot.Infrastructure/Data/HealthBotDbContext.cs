@@ -23,6 +23,7 @@ public class HealthBotDbContext : DbContext
             entity.HasIndex(u => u.TelegramId).IsUnique();
             entity.Property(u => u.TelegramId).IsRequired();
             entity.Property(u => u.Username).HasMaxLength(64);
+            entity.Property(u => u.TimeZoneId).HasMaxLength(128);
             entity.Property(u => u.CreatedAt).HasDefaultValueSql("NOW()");
         });
 

@@ -25,6 +25,9 @@ public class TelegramUpdateHandler : IUpdateHandler
     private readonly ConcurrentDictionary<long, ConversationContext> _sessions = new();
 
     private const string CallbackMenu = "menu";
+    private const string CallbackMainReminders = "main_reminders";
+    private const string CallbackMainNutrition = "main_nutrition";
+    private const string CallbackMainSettings = "main_settings";
     private const string CallbackTemplateSelect = "tpl";
     private const string CallbackTemplateDelay = "tpl_delay";
     private const string CallbackTemplateRepeat = "tpl_repeat";
@@ -32,7 +35,21 @@ public class TelegramUpdateHandler : IUpdateHandler
     private const string CallbackCustomDelay = "custom_delay";
     private const string CallbackCustomRepeat = "custom_repeat";
     private const string CallbackRemindersList = "reminders_list";
+    private const string CallbackRemindersTemplates = "reminders_templates";
     private const string CallbackRemindersDisable = "reminders_disable";
+    private const string CallbackSettingsTimezone = "settings_timezone";
+    private const string CallbackSettingsTimezoneSelect = "settings_timezone_select";
+    private const string CallbackSettingsTimezoneManual = "settings_timezone_manual";
+
+    private static readonly string[] PopularTimeZoneIds =
+    {
+        "Europe/Moscow",
+        "Europe/Kyiv",
+        "Europe/Minsk",
+        "Asia/Almaty",
+        "Asia/Yekaterinburg",
+        "Asia/Vladivostok"
+    };
 
     public TelegramUpdateHandler(IServiceScopeFactory scopeFactory, ILogger<TelegramUpdateHandler> logger)
     {
@@ -106,8 +123,8 @@ public class TelegramUpdateHandler : IUpdateHandler
         {
             session.Reset();
             await DeleteLastBotMessageAsync(botClient, message.Chat.Id, session, cancellationToken);
-            var introMessage = "Привет! Я Fitly.AI 🩺\n\nВыбери готовое напоминание или создай своё.";
-            await SendMainMenuAsync(botClient, reminderService, message.Chat.Id, session, cancellationToken, introMessage);
+            var introMessage = "Привет! Я Fitly.AI 🩺\n\nВыбери раздел ниже.";
+            await SendMainMenuAsync(botClient, message.Chat.Id, session, cancellationToken, introMessage);
             return;
         }
 
@@ -131,6 +148,9 @@ public class TelegramUpdateHandler : IUpdateHandler
                 return;
             case ConversationStage.AwaitingRepeatMinutes when session.ExpectManualInput:
                 await HandleManualRepeatAsync(botClient, reminderService, user, message.Chat.Id, text, session, cancellationToken);
+                return;
+            case ConversationStage.AwaitingTimeZoneManual when session.ExpectManualInput:
+                await HandleManualTimeZoneAsync(botClient, userService, user, message.Chat.Id, text, session, cancellationToken);
                 return;
         }
 
@@ -162,8 +182,23 @@ public class TelegramUpdateHandler : IUpdateHandler
                 case CallbackMenu:
                     session.Reset();
                     await botClient.AnswerCallbackQuery(callbackQuery.Id, cancellationToken: cancellationToken);
-                    await SendMainMenuAsync(botClient, reminderService, chatId, session, cancellationToken);
+                    await SendMainMenuAsync(botClient, chatId, session, cancellationToken);
                     return;
+
+                case CallbackMainReminders:
+                    session.Reset();
+                    await ShowReminderDashboardAsync(botClient, reminderService, user, chatId, session, cancellationToken);
+                    break;
+
+                case CallbackMainNutrition:
+                    session.Reset();
+                    await ShowNutritionStubAsync(botClient, chatId, session, cancellationToken);
+                    break;
+
+                case CallbackMainSettings:
+                    session.Reset();
+                    await ShowSettingsMenuAsync(botClient, chatId, session, user, cancellationToken);
+                    break;
 
                 case CallbackTemplateSelect:
                     await HandleTemplateSelectedAsync(botClient, reminderService, chatId, parts, session, cancellationToken);
@@ -175,10 +210,6 @@ public class TelegramUpdateHandler : IUpdateHandler
 
                 case CallbackTemplateRepeat:
                     await HandleTemplateRepeatCallbackAsync(botClient, reminderService, user, chatId, parts, session, cancellationToken);
-                    break;
-
-                case CallbackCustomNew:
-                    await HandleCustomStartAsync(botClient, chatId, session, cancellationToken);
                     break;
 
                 case CallbackCustomDelay:
@@ -195,8 +226,29 @@ public class TelegramUpdateHandler : IUpdateHandler
                     await ShowReminderListAsync(botClient, reminderService, user, chatId, session, cancellationToken);
                     return;
 
+                case CallbackRemindersTemplates:
+                    session.Reset();
+                    await ShowReminderTemplatesAsync(botClient, reminderService, chatId, session, cancellationToken);
+                    break;
+
+                case CallbackCustomNew:
+                    await HandleCustomStartAsync(botClient, chatId, session, cancellationToken);
+                    break;
+
                 case CallbackRemindersDisable:
                     await HandleDisableReminderCallbackAsync(botClient, reminderService, user, chatId, parts, session, cancellationToken);
+                    break;
+
+                case CallbackSettingsTimezone:
+                    await ShowTimezoneMenuAsync(botClient, chatId, session, user, cancellationToken);
+                    break;
+
+                case CallbackSettingsTimezoneSelect:
+                    await HandleTimezoneSelectAsync(botClient, userService, user, chatId, parts, session, cancellationToken);
+                    break;
+
+                case CallbackSettingsTimezoneManual:
+                    await StartManualTimezoneInputAsync(botClient, chatId, session, cancellationToken);
                     break;
 
                 default:
@@ -216,33 +268,197 @@ public class TelegramUpdateHandler : IUpdateHandler
     private ConversationContext GetSession(long chatId)
         => _sessions.GetOrAdd(chatId, _ => new ConversationContext());
 
-    private async Task SendMainMenuAsync(ITelegramBotClient botClient, ReminderService reminderService, long chatId, ConversationContext session, CancellationToken cancellationToken, string? messageText = null)
+    private async Task SendMainMenuAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CancellationToken cancellationToken, string? messageText = null)
     {
+        var markup = new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("🔔 Напоминания", CallbackMainReminders)
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("🥗 Питание", CallbackMainNutrition)
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("⚙️ Настройки", CallbackMainSettings)
+            }
+        });
+
+        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
+        var text = messageText ?? "Выбери раздел:";
+        await SendTrackedMessageAsync(botClient, chatId, session, text, replyMarkup: markup, cancellationToken: cancellationToken);
+    }
+
+    private async Task ShowReminderDashboardAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, ConversationContext session, CancellationToken cancellationToken)
+    {
+        session.Flow = ConversationFlow.Template;
+        session.Stage = ConversationStage.None;
+        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
+
+        var markup = new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("📋 Активные", CallbackRemindersList)
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("🧰 Кастом", CallbackCustomNew)
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("📚 Готовые шаблоны", CallbackRemindersTemplates)
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("↩️ Назад", CallbackMenu)
+            }
+        });
+
+        var userTz = user.TimeZoneId ?? "UTC";
+        var message = $"Выбери действие с напоминаниями.\nТекущая таймзона: {userTz}.";
+
+        await SendTrackedMessageAsync(botClient, chatId, session, message, replyMarkup: markup, cancellationToken: cancellationToken);
+    }
+
+    private async Task ShowNutritionStubAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CancellationToken cancellationToken)
+    {
+        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
+        await SendTrackedMessageAsync(botClient, chatId, session,
+            "Раздел \"Питание\" в разработке. Следи за обновлениями!",
+            replyMarkup: BuildBackToMenuKeyboard(),
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task ShowSettingsMenuAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CoreUser user, CancellationToken cancellationToken)
+    {
+        session.Stage = ConversationStage.None;
+        session.ExpectManualInput = false;
+
+        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
+
+        var currentTz = user.TimeZoneId ?? "не задана";
+        var markup = new InlineKeyboardMarkup(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("🌍 Таймзона", CallbackSettingsTimezone)
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("↩️ В меню", CallbackMenu)
+            }
+        });
+
+        await SendTrackedMessageAsync(botClient, chatId, session,
+            $"⚙️ Настройки\nТекущая таймзона: {currentTz}",
+            replyMarkup: markup,
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task ShowReminderTemplatesAsync(ITelegramBotClient botClient, ReminderService reminderService, long chatId, ConversationContext session, CancellationToken cancellationToken)
+    {
+        session.Stage = ConversationStage.None;
+        session.ExpectManualInput = false;
+
         var templates = await reminderService.GetReminderTemplatesAsync(cancellationToken);
 
-        var templateButtons = templates
-            .Select(t => InlineKeyboardButton.WithCallbackData(t.Title, $"{CallbackTemplateSelect}:{t.Code}"))
-            .ToList();
-
         var rows = new List<List<InlineKeyboardButton>>();
-        foreach (var chunk in templateButtons.Chunk(2))
+        foreach (var chunk in templates.Chunk(2))
         {
-            rows.Add(chunk.ToList());
+            rows.Add(chunk
+                .Select(t => InlineKeyboardButton.WithCallbackData(t.Title, $"{CallbackTemplateSelect}:{t.Code}"))
+                .ToList());
         }
 
         rows.Add(new List<InlineKeyboardButton>
         {
-            InlineKeyboardButton.WithCallbackData("➕ Кастомное напоминание", CallbackCustomNew),
-            InlineKeyboardButton.WithCallbackData("📋 Мои напоминания", CallbackRemindersList)
+            InlineKeyboardButton.WithCallbackData("🧰 Кастом", CallbackCustomNew)
         });
 
-        var markup = new InlineKeyboardMarkup(rows);
+        rows.Add(new List<InlineKeyboardButton>
+        {
+            InlineKeyboardButton.WithCallbackData("↩️ Назад", CallbackMainReminders)
+        });
 
         await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
-        var text = messageText ?? "Выбери один из шаблонов или создай своё напоминание:";
         await SendTrackedMessageAsync(botClient, chatId, session,
-            text,
-            replyMarkup: markup,
+            "Выбери шаблон напоминания:",
+            replyMarkup: new InlineKeyboardMarkup(rows),
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task ShowTimezoneMenuAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CoreUser user, CancellationToken cancellationToken)
+    {
+        session.Stage = ConversationStage.None;
+        session.ExpectManualInput = false;
+
+        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
+
+        var rows = PopularTimeZoneIds
+            .Select(tz => new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData(tz, $"{CallbackSettingsTimezoneSelect}:{tz}")
+            })
+            .ToList();
+
+        rows.Add(new List<InlineKeyboardButton>
+        {
+            InlineKeyboardButton.WithCallbackData("🔢 Ввести вручную", CallbackSettingsTimezoneManual)
+        });
+
+        rows.Add(new List<InlineKeyboardButton>
+        {
+            InlineKeyboardButton.WithCallbackData("↩️ Назад", CallbackMainSettings)
+        });
+
+        await SendTrackedMessageAsync(botClient, chatId, session,
+            "Выбери таймзону или введи вручную (например, Europe/Moscow)",
+            replyMarkup: new InlineKeyboardMarkup(rows),
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task HandleTimezoneSelectAsync(ITelegramBotClient botClient, UserService userService, CoreUser user, long chatId, string[] parts, ConversationContext session, CancellationToken cancellationToken)
+    {
+        if (parts.Length < 2)
+        {
+            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
+            await SendTrackedMessageAsync(botClient, chatId, session,
+                "Не удалось определить таймзону.",
+                cancellationToken: cancellationToken);
+            return;
+        }
+
+        var tzCandidate = parts[1];
+        if (!TryResolveTimeZone(tzCandidate, out var timeZoneInfo))
+        {
+            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
+            await SendTrackedMessageAsync(botClient, chatId, session,
+                "Не удалось распознать таймзону. Попробуй снова.",
+                cancellationToken: cancellationToken);
+            return;
+        }
+
+        await userService.SetUserTimeZoneAsync(user, timeZoneInfo.Id, cancellationToken);
+        user.TimeZoneId = timeZoneInfo.Id;
+
+        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
+        await SendTrackedMessageAsync(botClient, chatId, session,
+            $"Таймзона обновлена на {timeZoneInfo.Id}.",
+            replyMarkup: BuildBackToSettingsKeyboard(),
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task StartManualTimezoneInputAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, CancellationToken cancellationToken)
+    {
+        session.Stage = ConversationStage.AwaitingTimeZoneManual;
+        session.ExpectManualInput = true;
+
+        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
+        await SendTrackedMessageAsync(botClient, chatId, session,
+            "Введи идентификатор таймзоны (например, Europe/Moscow).",
             cancellationToken: cancellationToken);
     }
 
@@ -250,17 +466,19 @@ public class TelegramUpdateHandler : IUpdateHandler
     {
         var reminders = await reminderService.GetActiveRemindersForUserAsync(user.Id, cancellationToken);
 
+        var timeZoneInfo = ResolveTimeZone(user.TimeZoneId);
+
         if (reminders.Count == 0)
         {
             await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
             await SendTrackedMessageAsync(botClient, chatId, session,
-                "Активных напоминаний нет. Нажми кнопку ниже, чтобы вернуться в меню.",
-                replyMarkup: BuildBackToMenuKeyboard(),
+                "Активных напоминаний нет.",
+                replyMarkup: BuildBackToRemindersKeyboard(),
                 cancellationToken: cancellationToken);
             return;
         }
 
-        var lines = reminders.Select((reminder, index) => BuildReminderSummary(reminder, index + 1));
+        var lines = reminders.Select((reminder, index) => BuildReminderSummary(reminder, index + 1, timeZoneInfo));
         var text = "📋 Активные напоминания:\n" + string.Join("\n", lines);
 
         await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
@@ -556,6 +774,32 @@ public class TelegramUpdateHandler : IUpdateHandler
         await FinalizeReminderAsync(botClient, reminderService, user, chatId, session, repeat, cancellationToken);
     }
 
+    private async Task HandleManualTimeZoneAsync(ITelegramBotClient botClient, UserService userService, CoreUser user, long chatId, string text, ConversationContext session, CancellationToken cancellationToken)
+    {
+        var candidate = text.Trim();
+        if (!TryResolveTimeZone(candidate, out var timeZoneInfo))
+        {
+            await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
+            await SendTrackedMessageAsync(botClient, chatId, session,
+                "Не удалось распознать таймзону. Попробуй снова или выбери из списка.",
+                replyMarkup: BuildBackToSettingsKeyboard(),
+                cancellationToken: cancellationToken);
+            return;
+        }
+
+        await userService.SetUserTimeZoneAsync(user, timeZoneInfo.Id, cancellationToken);
+        user.TimeZoneId = timeZoneInfo.Id;
+
+        session.Stage = ConversationStage.None;
+        session.ExpectManualInput = false;
+
+        await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
+        await SendTrackedMessageAsync(botClient, chatId, session,
+            $"Таймзона обновлена на {timeZoneInfo.Id}.",
+            replyMarkup: BuildBackToSettingsKeyboard(),
+            cancellationToken: cancellationToken);
+    }
+
     private async Task HandleDisableReminderCallbackAsync(ITelegramBotClient botClient, ReminderService reminderService, CoreUser user, long chatId, string[] parts, ConversationContext session, CancellationToken cancellationToken)
     {
         if (parts.Length < 2)
@@ -617,14 +861,15 @@ public class TelegramUpdateHandler : IUpdateHandler
 
         session.Reset();
 
-        var nextTriggerLocal = reminder.NextTriggerAt.ToLocalTime();
+        var userTimeZone = ResolveTimeZone(user.TimeZoneId);
+        var nextTriggerLocal = ConvertUtcToUserTime(reminder.NextTriggerAt, userTimeZone);
         var repeatText = repeatValue.HasValue
             ? $" Повтор каждые {FormatInterval(repeatValue.Value)}."
             : " Без повтора.";
 
         await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
         await SendTrackedMessageAsync(botClient, chatId, session,
-            $"Готово! Напоминание \"{messageText}\" запланировано на {nextTriggerLocal:HH:mm}." + repeatText,
+            $"Готово! Напоминание \"{messageText}\" запланировано на {nextTriggerLocal:dd.MM HH:mm} ({userTimeZone.Id})." + repeatText,
             replyMarkup: BuildBackToMenuKeyboard(),
             cancellationToken: cancellationToken);
     }
@@ -685,9 +930,10 @@ public class TelegramUpdateHandler : IUpdateHandler
             InlineKeyboardButton.WithCallbackData("🔢 Ввести вручную", $"{prefix}:{code}:manual")
         });
 
+
         rows.Add(new List<InlineKeyboardButton>
         {
-            InlineKeyboardButton.WithCallbackData("↩️ В меню", CallbackMenu)
+            InlineKeyboardButton.WithCallbackData("↩️ К напоминаниям", CallbackMainReminders)
         });
 
         return new InlineKeyboardMarkup(rows);
@@ -757,15 +1003,111 @@ public class TelegramUpdateHandler : IUpdateHandler
             }
         });
 
-    private static string BuildReminderSummary(Reminder reminder, int index)
+    private static InlineKeyboardMarkup BuildBackToRemindersKeyboard()
+        => new(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("↩️ К напоминаниям", CallbackMainReminders)
+            }
+        });
+
+    private static InlineKeyboardMarkup BuildBackToSettingsKeyboard()
+        => new(new[]
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("↩️ К настройкам", CallbackMainSettings)
+            }
+        });
+
+    private static string BuildReminderSummary(Reminder reminder, int index, TimeZoneInfo timeZone)
     {
         var title = reminder.Template?.Title ?? reminder.Message;
-        var next = reminder.NextTriggerAt.ToLocalTime();
+        var next = ConvertUtcToUserTime(reminder.NextTriggerAt, timeZone);
         var repeatPart = reminder.RepeatIntervalMinutes is { } interval and > 0
             ? $"повтор каждые {FormatInterval(interval)}"
             : "без повтора";
 
         return $"{index}. {title} — {next:dd.MM HH:mm}, {repeatPart}";
+    }
+
+    private static DateTime ConvertUtcToUserTime(DateTime utcDateTime, TimeZoneInfo timeZone)
+    {
+        var utc = utcDateTime.Kind switch
+        {
+            DateTimeKind.Unspecified => DateTime.SpecifyKind(utcDateTime, DateTimeKind.Utc),
+            DateTimeKind.Local => utcDateTime.ToUniversalTime(),
+            _ => utcDateTime
+        };
+
+        return TimeZoneInfo.ConvertTimeFromUtc(utc, timeZone);
+    }
+
+    private static TimeZoneInfo ResolveTimeZone(string? timeZoneId)
+    {
+        if (!string.IsNullOrWhiteSpace(timeZoneId) && TryResolveTimeZone(timeZoneId, out var tz))
+        {
+            return tz;
+        }
+
+        return TimeZoneInfo.Utc;
+    }
+
+    private static bool TryResolveTimeZone(string timeZoneId, out TimeZoneInfo timeZone)
+    {
+        try
+        {
+            timeZone = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+            return true;
+        }
+        catch (TimeZoneNotFoundException)
+        {
+        }
+        catch (InvalidTimeZoneException)
+        {
+        }
+
+        // Попробуем обработать варианты вида UTC+3 или UTC-5
+        if (timeZoneId.StartsWith("UTC", StringComparison.OrdinalIgnoreCase) &&
+            timeZoneId.Length <= 7 &&
+            TimeSpanTryParseOffset(timeZoneId.AsSpan(3), out var offset))
+        {
+            timeZone = TimeZoneInfo.CreateCustomTimeZone(timeZoneId.ToUpperInvariant(), offset, timeZoneId.ToUpperInvariant(), timeZoneId.ToUpperInvariant());
+            return true;
+        }
+
+        timeZone = TimeZoneInfo.Utc;
+        return false;
+    }
+
+    private static bool TimeSpanTryParseOffset(ReadOnlySpan<char> span, out TimeSpan offset)
+    {
+        offset = default;
+        if (span.IsEmpty)
+        {
+            offset = TimeSpan.Zero;
+            return true;
+        }
+
+        var signChar = span[0];
+        if (signChar != '+' && signChar != '-')
+        {
+            return false;
+        }
+
+        if (!int.TryParse(span[1..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var hours))
+        {
+            return false;
+        }
+
+        if (hours is < 0 or > 14)
+        {
+            return false;
+        }
+
+        offset = TimeSpan.FromHours(signChar == '-' ? -hours : hours);
+        return true;
     }
 
     private static string GetReminderDisplayName(Reminder reminder)
@@ -830,6 +1172,7 @@ public class TelegramUpdateHandler : IUpdateHandler
         None,
         AwaitingCustomMessage,
         AwaitingFirstDelayMinutes,
-        AwaitingRepeatMinutes
+        AwaitingRepeatMinutes,
+        AwaitingTimeZoneManual
     }
 }

@@ -43,4 +43,14 @@ public class UserService
 
         return user;
     }
+
+    public async Task SetUserTimeZoneAsync(User user, string timeZoneId, CancellationToken cancellationToken = default)
+    {
+        if (user.TimeZoneId != timeZoneId)
+        {
+            user.TimeZoneId = timeZoneId;
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
 }
