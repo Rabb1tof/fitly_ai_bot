@@ -51,4 +51,4 @@ TestResults/
 *.html
 
 # Local scripts output
-data/
+/data/
