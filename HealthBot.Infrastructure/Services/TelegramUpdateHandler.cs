@@ -432,7 +432,7 @@ public class TelegramUpdateHandler : IUpdateHandler
         }
 
         var tzCandidate = parts[1];
-        if (!TryResolveTimeZone(tzCandidate, out var timeZoneInfo))
+        if (!TimeZoneHelper.TryResolve(tzCandidate, out var timeZoneInfo))
         {
             await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
             await SendTrackedMessageAsync(botClient, chatId, session,
@@ -466,7 +466,7 @@ public class TelegramUpdateHandler : IUpdateHandler
     {
         var reminders = await reminderService.GetActiveRemindersForUserAsync(user.Id, cancellationToken);
 
-        var timeZoneInfo = ResolveTimeZone(user.TimeZoneId);
+        var timeZoneInfo = TimeZoneHelper.Resolve(user.TimeZoneId);
 
         if (reminders.Count == 0)
         {
@@ -777,7 +777,7 @@ public class TelegramUpdateHandler : IUpdateHandler
     private async Task HandleManualTimeZoneAsync(ITelegramBotClient botClient, UserService userService, CoreUser user, long chatId, string text, ConversationContext session, CancellationToken cancellationToken)
     {
         var candidate = text.Trim();
-        if (!TryResolveTimeZone(candidate, out var timeZoneInfo))
+        if (!TimeZoneHelper.TryResolve(candidate, out var timeZoneInfo))
         {
             await DeleteLastBotMessageAsync(botClient, chatId, session, cancellationToken);
             await SendTrackedMessageAsync(botClient, chatId, session,
@@ -861,8 +861,8 @@ public class TelegramUpdateHandler : IUpdateHandler
 
         session.Reset();
 
-        var userTimeZone = ResolveTimeZone(user.TimeZoneId);
-        var nextTriggerLocal = ConvertUtcToUserTime(reminder.NextTriggerAt, userTimeZone);
+        var userTimeZone = TimeZoneHelper.Resolve(user.TimeZoneId);
+        var nextTriggerLocal = TimeZoneHelper.ConvertUtcToUserTime(reminder.NextTriggerAt, userTimeZone);
         var repeatText = repeatValue.HasValue
             ? $" Повтор каждые {FormatInterval(repeatValue.Value)}."
             : " Без повтора.";
@@ -1024,90 +1024,12 @@ public class TelegramUpdateHandler : IUpdateHandler
     private static string BuildReminderSummary(Reminder reminder, int index, TimeZoneInfo timeZone)
     {
         var title = reminder.Template?.Title ?? reminder.Message;
-        var next = ConvertUtcToUserTime(reminder.NextTriggerAt, timeZone);
+        var next = TimeZoneHelper.ConvertUtcToUserTime(reminder.NextTriggerAt, timeZone);
         var repeatPart = reminder.RepeatIntervalMinutes is { } interval and > 0
             ? $"повтор каждые {FormatInterval(interval)}"
             : "без повтора";
 
         return $"{index}. {title} — {next:dd.MM HH:mm}, {repeatPart}";
-    }
-
-    private static DateTime ConvertUtcToUserTime(DateTime utcDateTime, TimeZoneInfo timeZone)
-    {
-        var utc = utcDateTime.Kind switch
-        {
-            DateTimeKind.Unspecified => DateTime.SpecifyKind(utcDateTime, DateTimeKind.Utc),
-            DateTimeKind.Local => utcDateTime.ToUniversalTime(),
-            _ => utcDateTime
-        };
-
-        return TimeZoneInfo.ConvertTimeFromUtc(utc, timeZone);
-    }
-
-    private static TimeZoneInfo ResolveTimeZone(string? timeZoneId)
-    {
-        if (!string.IsNullOrWhiteSpace(timeZoneId) && TryResolveTimeZone(timeZoneId, out var tz))
-        {
-            return tz;
-        }
-
-        return TimeZoneInfo.Utc;
-    }
-
-    private static bool TryResolveTimeZone(string timeZoneId, out TimeZoneInfo timeZone)
-    {
-        try
-        {
-            timeZone = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
-            return true;
-        }
-        catch (TimeZoneNotFoundException)
-        {
-        }
-        catch (InvalidTimeZoneException)
-        {
-        }
-
-        // Попробуем обработать варианты вида UTC+3 или UTC-5
-        if (timeZoneId.StartsWith("UTC", StringComparison.OrdinalIgnoreCase) &&
-            timeZoneId.Length <= 7 &&
-            TimeSpanTryParseOffset(timeZoneId.AsSpan(3), out var offset))
-        {
-            timeZone = TimeZoneInfo.CreateCustomTimeZone(timeZoneId.ToUpperInvariant(), offset, timeZoneId.ToUpperInvariant(), timeZoneId.ToUpperInvariant());
-            return true;
-        }
-
-        timeZone = TimeZoneInfo.Utc;
-        return false;
-    }
-
-    private static bool TimeSpanTryParseOffset(ReadOnlySpan<char> span, out TimeSpan offset)
-    {
-        offset = default;
-        if (span.IsEmpty)
-        {
-            offset = TimeSpan.Zero;
-            return true;
-        }
-
-        var signChar = span[0];
-        if (signChar != '+' && signChar != '-')
-        {
-            return false;
-        }
-
-        if (!int.TryParse(span[1..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var hours))
-        {
-            return false;
-        }
-
-        if (hours is < 0 or > 14)
-        {
-            return false;
-        }
-
-        offset = TimeSpan.FromHours(signChar == '-' ? -hours : hours);
-        return true;
     }
 
     private static string GetReminderDisplayName(Reminder reminder)
