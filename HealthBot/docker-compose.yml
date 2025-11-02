@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: healthbot_db
+    environment:
+      POSTGRES_USER: healthbot
+      POSTGRES_PASSWORD: healthbot
+      POSTGRES_DB: healthbot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U healthbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: healthbot_api
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Production"
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=healthbot;Username=healthbot;Password=healthbot;Timeout=30;Command Timeout=60"
+      Telegram__BotToken: "${TELEGRAM_BOT_TOKEN:?Требуется TELEGRAM_BOT_TOKEN}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
