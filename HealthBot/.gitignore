@@ -1,0 +1,54 @@
+# Build outputs
+bin/
+obj/
+
+# User-specific files
+*.user
+*.suo
+*.userprefs
+
+# Visual Studio / IDE cache
+.vs/
+.idea/
+*.swp
+*.sln.docstates
+
+# Rider / JetBrains
+*.iml
+.idea/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# NuGet
+*.nupkg
+packages/
+# allow packages lock if needed
+!packages.lock.json
+
+# Env files
+.env
+*.env.local
+
+# Docker
+**/docker-compose.override.yml
+**/docker-compose.*.yml
+*.pid
+
+# EF Core tools
+migrations/*.Designer.cs
+
+# Coverage / reports
+coverage/
+TestResults/
+
+# Generated docs
+*.html
+
+# Local scripts output
+data/
