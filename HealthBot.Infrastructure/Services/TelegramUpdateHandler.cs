@@ -106,7 +106,7 @@ public class TelegramUpdateHandler : IUpdateHandler
         {
             session.Reset();
             await DeleteLastBotMessageAsync(botClient, message.Chat.Id, session, cancellationToken);
-            var introMessage = "Привет! Я HealthBot 🩺\n\nВыбери готовое напоминание или создай своё.";
+            var introMessage = "Привет! Я Fitly.AI 🩺\n\nВыбери готовое напоминание или создай своё.";
             await SendMainMenuAsync(botClient, reminderService, message.Chat.Id, session, cancellationToken, introMessage);
             return;
         }
