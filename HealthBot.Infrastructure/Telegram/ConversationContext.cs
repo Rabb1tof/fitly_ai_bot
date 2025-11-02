@@ -17,6 +17,12 @@ public sealed class ConversationContext
 
     public void Reset()
     {
+        ResetFlowState();
+        LastBotMessageId = null;
+    }
+
+    public void ResetFlowState()
+    {
         Flow = ConversationFlow.None;
         Stage = ConversationStage.None;
         TemplateCode = null;

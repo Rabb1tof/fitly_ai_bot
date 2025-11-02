@@ -91,7 +91,7 @@ public static class ReminderWorkflow
         }
 
         var session = context.Session;
-        session.Reset();
+        session.ResetFlowState();
         session.Flow = ConversationFlow.Template;
         session.Stage = ConversationStage.AwaitingFirstDelayMinutes;
         session.TemplateCode = template.Code;
@@ -126,7 +126,7 @@ public static class ReminderWorkflow
                 return;
             }
 
-            session.Reset();
+            session.ResetFlowState();
             session.Flow = ConversationFlow.Template;
             session.Stage = ConversationStage.AwaitingFirstDelayMinutes;
             session.TemplateCode = template.Code;
@@ -205,7 +205,7 @@ public static class ReminderWorkflow
     public static Task StartCustomFlowAsync(CommandContext context)
     {
         var session = context.Session;
-        session.Reset();
+        session.ResetFlowState();
         session.Flow = ConversationFlow.Custom;
         session.Stage = ConversationStage.AwaitingCustomMessage;
         session.ExpectManualInput = true;
@@ -395,7 +395,7 @@ public static class ReminderWorkflow
             templateId,
             context.CancellationToken);
 
-        session.Reset();
+        session.ResetFlowState();
 
         var userTimeZone = TimeZoneHelper.Resolve(context.User.TimeZoneId);
         var nextTriggerLocal = TimeZoneHelper.ConvertUtcToUserTime(reminder.NextTriggerAt, userTimeZone);
