@@ -480,7 +480,7 @@ public class TelegramUpdateHandlerTests
                 _scopeFactory,
                 NullLogger<TelegramUpdateHandler>.Instance,
                 dispatcher,
-                new InMemoryConversationContextStore(),
+                new InMemoryConversationContextStore(Options.Create(_redisOptions)),
                 _serviceProvider.GetRequiredService<IRedisCacheService>(),
                 _serviceProvider.GetRequiredService<IOptions<RedisOptions>>(),
                 SentMessages);
