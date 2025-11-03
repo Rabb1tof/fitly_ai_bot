@@ -12,6 +12,13 @@ obj/
 .idea/
 *.swp
 *.sln.docstates
+*.code-workspace
+
+# VS Code
+.vscode/
+
+# Windsurf IDE
+.windsurf/
 
 # Rider / JetBrains
 *.iml

@@ -18,6 +18,18 @@ services:
       timeout: 3s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: healthbot_redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   api:
     build:
       context: .
@@ -26,9 +38,12 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: "Production"
       ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=healthbot;Username=healthbot;Password=healthbot;Timeout=30;Command Timeout=60"
-      Telegram__BotToken: "${TELEGRAM_BOT_TOKEN:?Требуется TELEGRAM_BOT_TOKEN}"
+      Telegram__BotToken: "${TELEGRAM_BOT_TOKEN:?Требуется TELEGRAM_BОТ_TOKEN}"
+      Redis__ConnectionString: "redis:6379"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     ports:
       - "8080:8080"
@@ -36,3 +51,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
