@@ -47,7 +47,7 @@ public class ReminderWorker : BackgroundService
                 var lookaheadMinutes = Math.Max(1, _redisOptions.ReminderLookaheadMinutes);
                 var dueUntil = now.AddMinutes(lookaheadMinutes);
 
-                var leases = await reminderService.DequeueDueRemindersAsync(dueUntil, stoppingToken);
+                var leases = await reminderService.DequeueDueRemindersAsync(now, dueUntil, stoppingToken);
                 if (leases.Count == 0)
                 {
                     await Task.Delay(_idleDelay, stoppingToken);

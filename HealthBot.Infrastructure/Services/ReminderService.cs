@@ -64,16 +64,23 @@ public class ReminderService
             .ToListAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<ReminderLease>> DequeueDueRemindersAsync(DateTime utcNow, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<ReminderLease>> DequeueDueRemindersAsync(DateTime utcNow, DateTime dueHorizonUtc, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(_redisOptions.ConnectionString))
         {
-            var dueReminders = await GetDueRemindersAsync(utcNow, cancellationToken);
-            return dueReminders.Select(r => new ReminderLease(r, string.Empty)).ToList();
+            var dueReminders = await _dbContext.Reminders
+                .Include(r => r.User)
+                .Where(r => r.IsActive && r.NextTriggerAt <= dueHorizonUtc)
+                .ToListAsync(cancellationToken);
+
+            return dueReminders
+                .Where(r => r.NextTriggerAt <= utcNow)
+                .Select(r => new ReminderLease(r, string.Empty))
+                .ToList();
         }
 
         var queueKey = RedisCacheKeys.ReminderQueue();
-        var maxScore = new DateTimeOffset(utcNow.ToUniversalTime()).ToUnixTimeMilliseconds();
+        var maxScore = new DateTimeOffset(dueHorizonUtc.ToUniversalTime()).ToUnixTimeMilliseconds();
         var batchSize = Math.Max(1, _redisOptions.ReminderBatchSize);
 
         var candidates = await _cache.RangeByScoreAsync(queueKey, double.NegativeInfinity, maxScore, batchSize, cancellationToken);
