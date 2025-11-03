@@ -137,4 +137,21 @@ public sealed class RedisCacheService : IRedisCacheService
         return await Database.SortedSetRemoveRangeByScoreAsync(BuildKey(key), minScore, maxScore).ConfigureAwait(false);
     }
 
+    public async Task<bool> RemoveFromSortedSetAsync(string key, string member, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return await Database.SortedSetRemoveAsync(BuildKey(key), member).ConfigureAwait(false);
+    }
+
+    public async Task<long> RemoveFromSortedSetAsync(string key, IEnumerable<string> members, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var redisValues = members.Select(m => (RedisValue)m).ToArray();
+        if (redisValues.Length == 0)
+        {
+            return 0;
+        }
+
+        return await Database.SortedSetRemoveAsync(BuildKey(key), redisValues).ConfigureAwait(false);
+    }
 }

@@ -3,32 +3,58 @@ using System.Threading;
 using System.Threading.Tasks;
 using HealthBot.Core.Entities;
 using HealthBot.Infrastructure.Data;
+using HealthBot.Shared.Options;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace HealthBot.Infrastructure.Services;
 
 public class UserService
 {
     private readonly HealthBotDbContext _dbContext;
+    private readonly IRedisCacheService _cache;
+    private readonly RedisOptions _redisOptions;
 
-    public UserService(HealthBotDbContext dbContext)
+    public UserService(
+        HealthBotDbContext dbContext,
+        IRedisCacheService cache,
+        IOptions<RedisOptions> redisOptions)
     {
         _dbContext = dbContext;
+        _cache = cache;
+        _redisOptions = redisOptions.Value;
     }
 
     public async Task<User> RegisterUserAsync(long telegramId, string? username, CancellationToken cancellationToken = default)
     {
+        var cacheKey = RedisCacheKeys.UserProfile(telegramId);
+        var cachedUser = await _cache.GetAsync<User>(cacheKey, cancellationToken);
+
+        if (cachedUser is not null)
+        {
+            var trackedUser = _dbContext.Attach(cachedUser).Entity;
+            if (username is not null && !string.Equals(trackedUser.Username, username, StringComparison.Ordinal))
+            {
+                trackedUser.Username = username;
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await CacheUserAsync(trackedUser, cancellationToken);
+            }
+
+            return trackedUser;
+        }
+
         var existingUser = await _dbContext.Users
             .FirstOrDefaultAsync(u => u.TelegramId == telegramId, cancellationToken);
 
         if (existingUser is not null)
         {
-            if (!string.Equals(existingUser.Username, username, StringComparison.Ordinal) && username is not null)
+            if (username is not null && !string.Equals(existingUser.Username, username, StringComparison.Ordinal))
             {
                 existingUser.Username = username;
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
 
+            await CacheUserAsync(existingUser, cancellationToken);
             return existingUser;
         }
 
@@ -40,6 +66,7 @@ public class UserService
 
         _dbContext.Users.Add(user);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await CacheUserAsync(user, cancellationToken);
 
         return user;
     }
@@ -52,5 +79,12 @@ public class UserService
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await CacheUserAsync(user, cancellationToken);
+    }
+
+    private Task CacheUserAsync(User user, CancellationToken cancellationToken)
+    {
+        var cacheKey = RedisCacheKeys.UserProfile(user.TelegramId);
+        return _cache.SetAsync(cacheKey, user, _redisOptions.GetDefaultTtl(), cancellationToken);
     }
 }

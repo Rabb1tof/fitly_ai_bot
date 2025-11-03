@@ -13,10 +13,12 @@ using HealthBot.Infrastructure.Telegram.Commands;
 using HealthBot.Infrastructure.Telegram.Commands.Abstractions;
 using HealthBot.Infrastructure.Telegram.Commands.Callback;
 using HealthBot.Infrastructure.Telegram.Commands.Message;
+using HealthBot.Shared.Options;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Telegram.Bot;
 using Telegram.Bot.Requests;
@@ -255,6 +257,8 @@ public class TelegramUpdateHandlerTests
 
             var services = new ServiceCollection();
             services.AddSingleton(DbContext);
+            services.AddSingleton<IRedisCacheService, NoOpRedisCacheService>();
+            services.AddSingleton<IOptions<RedisOptions>>(_ => Options.Create(new RedisOptions()));
             services.AddScoped<UserService>();
             services.AddScoped<ReminderService>();
 

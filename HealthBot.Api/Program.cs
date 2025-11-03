@@ -38,6 +38,7 @@ if (!string.IsNullOrWhiteSpace(redisConnectionString))
 }
 else
 {
+    builder.Services.AddSingleton<IRedisCacheService, NoOpRedisCacheService>();
     builder.Services.AddSingleton<IConversationContextStore, InMemoryConversationContextStore>();
 }
 

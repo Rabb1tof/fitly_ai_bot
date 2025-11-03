@@ -29,4 +29,8 @@ public interface IRedisCacheService
         CancellationToken cancellationToken = default);
 
     Task<long> RemoveRangeByScoreAsync(string key, double minScore, double maxScore, CancellationToken cancellationToken = default);
+
+    Task<bool> RemoveFromSortedSetAsync(string key, string member, CancellationToken cancellationToken = default);
+
+    Task<long> RemoveFromSortedSetAsync(string key, IEnumerable<string> members, CancellationToken cancellationToken = default);
 }
