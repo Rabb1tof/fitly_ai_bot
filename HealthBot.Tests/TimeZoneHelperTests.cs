@@ -264,7 +264,12 @@ public class TelegramUpdateHandlerTests
             _serviceProvider = services.BuildServiceProvider();
             _scopeFactory = _serviceProvider.GetRequiredService<IServiceScopeFactory>();
 
-            Handler = new TestTelegramUpdateHandler(_scopeFactory, NullLogger<TelegramUpdateHandler>.Instance, dispatcher, SentMessages);
+            Handler = new TestTelegramUpdateHandler(
+                _scopeFactory,
+                NullLogger<TelegramUpdateHandler>.Instance,
+                dispatcher,
+                new InMemoryConversationContextStore(),
+                SentMessages);
         }
 
         public async Task SendTextAsync(string text)
@@ -342,8 +347,9 @@ public class TelegramUpdateHandlerTests
             IServiceScopeFactory scopeFactory,
             ILogger<TelegramUpdateHandler> logger,
             CommandDispatcher dispatcher,
+            IConversationContextStore sessionStore,
             List<(string Text, InlineKeyboardMarkup? Markup)> sentMessages)
-            : base(scopeFactory, logger, dispatcher)
+            : base(scopeFactory, logger, dispatcher, sessionStore)
         {
             _sentMessages = sentMessages;
         }

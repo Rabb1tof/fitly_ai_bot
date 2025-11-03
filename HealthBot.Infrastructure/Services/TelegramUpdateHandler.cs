@@ -1,14 +1,11 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using HealthBot.Core.Entities;
 using HealthBot.Infrastructure.Telegram;
 using HealthBot.Infrastructure.Telegram.Commands;
-using CoreUser = HealthBot.Core.Entities.User;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Telegram.Bot;
@@ -25,16 +22,18 @@ public class TelegramUpdateHandler : IUpdateHandler
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<TelegramUpdateHandler> _logger;
     private readonly CommandDispatcher _dispatcher;
-    private readonly ConcurrentDictionary<long, ConversationContext> _sessions = new();
+    private readonly IConversationContextStore _sessionStore;
 
     public TelegramUpdateHandler(
         IServiceScopeFactory scopeFactory,
         ILogger<TelegramUpdateHandler> logger,
-        CommandDispatcher dispatcher)
+        CommandDispatcher dispatcher,
+        IConversationContextStore sessionStore)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
         _dispatcher = dispatcher;
+        _sessionStore = sessionStore;
     }
 
     public async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
@@ -87,7 +86,7 @@ public class TelegramUpdateHandler : IUpdateHandler
 
         var username = message.From?.Username ?? message.Chat.Username;
         var user = await userService.RegisterUserAsync(message.Chat.Id, username, cancellationToken);
-        var session = GetSession(message.Chat.Id);
+        var session = await _sessionStore.GetSessionAsync(message.Chat.Id, cancellationToken);
 
         var context = new CommandContext(
             botClient,
@@ -100,10 +99,17 @@ public class TelegramUpdateHandler : IUpdateHandler
             SendTrackedMessageAsync,
             DeleteLastBotMessageAsync);
 
-        if (!await _dispatcher.DispatchAsync(context))
+        try
         {
-            await context.DeleteLastMessageAsync();
-            await context.SendMessageAsync("Я пока не понимаю это сообщение. Используй /menu для управления напоминаниями.");
+            if (!await _dispatcher.DispatchAsync(context))
+            {
+                await context.DeleteLastMessageAsync();
+                await context.SendMessageAsync("Я пока не понимаю это сообщение. Используй /menu для управления напоминаниями.");
+            }
+        }
+        finally
+        {
+            await PersistSessionAsync(message.Chat.Id, session, cancellationToken);
         }
     }
 
@@ -118,7 +124,7 @@ public class TelegramUpdateHandler : IUpdateHandler
 
         var username = callbackQuery.From.Username;
         var user = await userService.RegisterUserAsync(chatId, username, cancellationToken);
-        var session = GetSession(chatId);
+        var session = await _sessionStore.GetSessionAsync(chatId, cancellationToken);
 
         var context = new CommandContext(
             botClient,
@@ -131,14 +137,49 @@ public class TelegramUpdateHandler : IUpdateHandler
             SendTrackedMessageAsync,
             DeleteLastBotMessageAsync);
 
-        if (!await _dispatcher.DispatchAsync(context))
+        try
         {
-            await context.AnswerCallbackAsync("Неизвестное действие");
+            if (!await _dispatcher.DispatchAsync(context))
+            {
+                await context.AnswerCallbackAsync("Неизвестное действие");
+            }
+        }
+        finally
+        {
+            await PersistSessionAsync(chatId, session, cancellationToken);
         }
     }
 
-    private ConversationContext GetSession(long chatId)
-        => _sessions.GetOrAdd(chatId, _ => new ConversationContext());
+    private async Task PersistSessionAsync(long chatId, ConversationContext session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (IsSessionEmpty(session))
+            {
+                await _sessionStore.DeleteSessionAsync(chatId, cancellationToken);
+            }
+            else
+            {
+                await _sessionStore.SaveSessionAsync(chatId, session, cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Не удалось сохранить состояние сессии для чата {ChatId}", chatId);
+        }
+    }
+
+    private static bool IsSessionEmpty(ConversationContext session)
+        => session.Flow == ConversationFlow.None
+           && session.Stage == ConversationStage.None
+           && session.TemplateCode is null
+           && session.TemplateId is null
+           && session.TemplateTitle is null
+           && session.TemplateDefaultRepeat is null
+           && session.CustomMessage is null
+           && session.FirstDelayMinutes is null
+           && session.ExpectManualInput == false
+           && session.LastBotMessageId is null;
 
     protected virtual async Task<Message> SendTrackedMessageAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, string text, InlineKeyboardMarkup? replyMarkup = null, CancellationToken cancellationToken = default)
     {

@@ -12,7 +12,7 @@ Telegram-бот для wellbeing-напоминаний, построенный 
 - [Документация](#документация)
 
 ## Обзор
-- **Стек:** .NET 9, ASP.NET Core, EF Core + Npgsql, Telegram.Bot 22.x, Docker, PostgreSQL 16.
+- **Стек:** .NET 9, ASP.NET Core, EF Core + Npgsql, Telegram.Bot 22.x, Docker, PostgreSQL 16, Redis (опционально).
 - **Основные сервисы:** API-хост, ReminderWorker и CommandDispatcher, управляющий Telegram-командами.
 - **Особенности:** хранение напоминаний в UTC с учётом пользовательской таймзоны, шаблоны и кастомные сценарии, автоматическое удаление предыдущих ответов бота.
 
@@ -41,7 +41,7 @@ docker compose up -d --build
 ## Структура решения
 - `HealthBot.Api` — конфигурация DI, запуск фоновых сервисов, миграции.
 - `HealthBot.Core` — доменные сущности (`User`, `Reminder`, `ReminderTemplate`).
-- `HealthBot.Infrastructure` — DbContext, Telegram-потоки, фоновые задачи.
+- `HealthBot.Infrastructure` — DbContext, Telegram-потоки, фоновые задачи, инфраструктура Redis.
 - `HealthBot.Shared` — общие модели и настройки.
 - `HealthBot.Tests` — интеграционные и unit-тесты для Telegram-потоков и сервисов.
 
@@ -52,6 +52,7 @@ docker compose up -d --build
 - Ключевые переменные:
   - `TELEGRAM_BOT_TOKEN`
   - `ConnectionStrings__Postgres`
+  - опционально `Redis__ConnectionString`, `Redis__DefaultTtlMinutes`
   - опциональные `ReminderWorker__PollingIntervalSeconds` и т. д.
 - Миграции и сиды напоминаний описаны в [docs/setup.md](docs/setup.md#миграции-и-инициализация).
 
@@ -74,7 +75,7 @@ docker compose up -d --build
 
 ## Документация
 - [docs/architecture.md](docs/architecture.md) — компоненты и техничка.
-- [docs/setup.md](docs/setup.md) — развёртывание и конфигурация.
+- [docs/setup.md](docs/setup.md) — развёртывание и конфигурация (PostgreSQL, Redis).
 - [docs/operations.md](docs/operations.md) — эксплуатация, миграции, полезные команды.
 - [docs/testing.md](docs/testing.md) — структура и запуск тестов.
 - [docs/contributing.md](docs/contributing.md) — правила для разработчиков.

@@ -9,16 +9,16 @@
 ## Структура решения
 - `HealthBot.Api` — ASP.NET Core host, DI, запуск `TelegramPollingService` и `ReminderWorker`, миграции.
 - `HealthBot.Core` — сущности и доменные типы.
-- `HealthBot.Infrastructure` — DbContext, сервисы (`UserService`, `ReminderService`), Telegram update pipeline, фоновые задачи.
+- `HealthBot.Infrastructure` — DbContext, сервисы (`UserService`, `ReminderService`), Telegram update pipeline, фоновые задачи, интеграция Redis.
 - `HealthBot.Shared` — опции (`TelegramOptions`, `ReminderWorkerOptions`), вспомогательные модели.
 - `HealthBot.Tests` — интеграционные сценарии для Telegram и unit-тесты.
-- `docker-compose.yml` поднимает PostgreSQL и API контейнер.
+- `docker-compose.yml` поднимает PostgreSQL, Redis и API контейнер.
 
 Ссылки на документацию: см. `docs/architecture.md` и `README.md`.
 
 ## Основной workflow (см. также `docs/setup.md`)
-1. Подготовить `.env`/user-secrets (`TELEGRAM_BOT_TOKEN`, `ConnectionStrings__Postgres`).
-2. Для Docker: `docker compose up -d --build` — миграции применяются автоматически.
+1. Подготовить `.env`/user-secrets (`TELEGRAM_BOT_TOKEN`, `ConnectionStrings__Postgres`, при необходимости `Redis__ConnectionString`).
+2. Для Docker: `docker compose up -d --build` — миграции применяются автоматически, поднимаются контейнеры PostgreSQL и Redis.
 3. Для локальной разработки:
    ```bash
    dotnet ef database update -p HealthBot.Infrastructure -s HealthBot.Api

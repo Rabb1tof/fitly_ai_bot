@@ -2,6 +2,7 @@ using System;
 using System.Net.Http;
 using HealthBot.Infrastructure.Data;
 using HealthBot.Infrastructure.Services;
+using HealthBot.Infrastructure.Telegram;
 using HealthBot.Infrastructure.Telegram.Commands;
 using HealthBot.Infrastructure.Telegram.Commands.Abstractions;
 using HealthBot.Infrastructure.Telegram.Commands.Callback;
@@ -12,10 +13,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Telegram.Bot;
 using Telegram.Bot.Polling;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<TelegramOptions>(builder.Configuration.GetSection(TelegramOptions.SectionName));
+builder.Services.Configure<RedisOptions>(builder.Configuration.GetSection(RedisOptions.SectionName));
 
 builder.Services.AddDbContext<HealthBotDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Postgres"),
@@ -25,6 +28,19 @@ builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<ReminderService>();
 builder.Services.AddHostedService<ReminderWorker>();
 builder.Services.AddHttpClient("telegram");
+
+var redisConnectionString = builder.Configuration.GetSection(RedisOptions.SectionName).GetValue<string>(nameof(RedisOptions.ConnectionString));
+if (!string.IsNullOrWhiteSpace(redisConnectionString))
+{
+    builder.Services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(redisConnectionString));
+    builder.Services.AddSingleton<IRedisCacheService, RedisCacheService>();
+    builder.Services.AddSingleton<IConversationContextStore, RedisConversationContextStore>();
+}
+else
+{
+    builder.Services.AddSingleton<IConversationContextStore, InMemoryConversationContextStore>();
+}
+
 builder.Services.AddSingleton<ITelegramBotClient>(sp =>
 {
     var options = sp.GetRequiredService<IOptions<TelegramOptions>>().Value;

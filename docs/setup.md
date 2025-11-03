@@ -19,6 +19,11 @@ TELEGRAM_BOT_TOKEN=1234567890:abcdefg
 # База данных (используется и Docker, и локально)
 ConnectionStrings__Postgres=Host=localhost;Port=5432;Database=healthbot;Username=healthbot;Password=healthbot
 
+# Redis (опционально)
+Redis__ConnectionString=localhost:6379
+Redis__KeyPrefix=healthbot:
+Redis__DefaultTtlMinutes=30
+
 # Настройки воркера (опционально)
 ReminderWorker__PollingIntervalSeconds=60
 ```
@@ -35,6 +40,7 @@ dotnet user-secrets set "TELEGRAM_BOT_TOKEN" "1234567890:abcdefg" --project Heal
 docker compose up -d --build
 ```
 - Контейнер `healthbot_api` применяет миграции и запускает long polling.
+- Контейнер `healthbot_redis` поднимает Redis (используется для хранения сессий и кэша, см. `Redis__ConnectionString`).
 - Логи: `docker compose logs -f healthbot_api`.
 - Остановить и очистить данные: `docker compose down -v`.
 
@@ -75,6 +81,7 @@ docker compose up -d --build
 | Миграции не применяются | Убедитесь, что строка подключения корректна и доступ к БД открыт. |
 | Ошибка удаления сообщений | Проверьте, что `LastBotMessageId` не сбрасывается досрочно и бот имеет права удалять сообщение. |
 | ReminderWorker не отправляет уведомления | Проверьте логи, убедитесь, что время напоминаний наступило и пользователь имеет таймзону. |
+| Redis не подключается | Убедитесь, что `Redis__ConnectionString` корректен и контейнер `healthbot_redis` в статусе `healthy`. |
 
 ## Обновление
 - Перед обновлением схемы БД создайте резервную копию (`pg_dump`).
