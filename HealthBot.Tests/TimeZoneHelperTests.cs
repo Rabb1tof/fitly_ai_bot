@@ -273,6 +273,8 @@ public class TelegramUpdateHandlerTests
                 NullLogger<TelegramUpdateHandler>.Instance,
                 dispatcher,
                 new InMemoryConversationContextStore(),
+                _serviceProvider.GetRequiredService<IRedisCacheService>(),
+                _serviceProvider.GetRequiredService<IOptions<RedisOptions>>(),
                 SentMessages);
         }
 
@@ -352,8 +354,10 @@ public class TelegramUpdateHandlerTests
             ILogger<TelegramUpdateHandler> logger,
             CommandDispatcher dispatcher,
             IConversationContextStore sessionStore,
+            IRedisCacheService cache,
+            IOptions<RedisOptions> redisOptions,
             List<(string Text, InlineKeyboardMarkup? Markup)> sentMessages)
-            : base(scopeFactory, logger, dispatcher, sessionStore)
+            : base(scopeFactory, logger, dispatcher, sessionStore, cache, redisOptions)
         {
             _sentMessages = sentMessages;
         }

@@ -4,10 +4,13 @@ using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using HealthBot.Infrastructure.Data;
 using HealthBot.Infrastructure.Telegram;
 using HealthBot.Infrastructure.Telegram.Commands;
+using HealthBot.Shared.Options;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
@@ -23,17 +26,23 @@ public class TelegramUpdateHandler : IUpdateHandler
     private readonly ILogger<TelegramUpdateHandler> _logger;
     private readonly CommandDispatcher _dispatcher;
     private readonly IConversationContextStore _sessionStore;
+    private readonly IRedisCacheService _cache;
+    private readonly RedisOptions _redisOptions;
 
     public TelegramUpdateHandler(
         IServiceScopeFactory scopeFactory,
         ILogger<TelegramUpdateHandler> logger,
         CommandDispatcher dispatcher,
-        IConversationContextStore sessionStore)
+        IConversationContextStore sessionStore,
+        IRedisCacheService cache,
+        IOptions<RedisOptions> redisOptions)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
         _dispatcher = dispatcher;
         _sessionStore = sessionStore;
+        _cache = cache;
+        _redisOptions = redisOptions.Value;
     }
 
     public async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
@@ -80,6 +89,17 @@ public class TelegramUpdateHandler : IUpdateHandler
             return;
         }
 
+        if (await IsRateLimitedAsync(RedisCacheKeys.RateLimitMessages(message.Chat.Id), _redisOptions.MessageRateLimitPerMinute, cancellationToken) is { IsLimited: true } rateLimit)
+        {
+            if (rateLimit.ShouldNotify)
+            {
+                await botClient.SendMessage(new ChatId(message.Chat.Id), "Слишком много запросов. Попробуй позже.", cancellationToken: cancellationToken);
+            }
+
+            _logger.LogWarning("Message rate limit exceeded for chat {ChatId} (count: {Count})", message.Chat.Id, rateLimit.Count);
+            return;
+        }
+
         using var scope = _scopeFactory.CreateScope();
         var services = scope.ServiceProvider;
         var userService = services.GetRequiredService<UserService>();
@@ -117,6 +137,17 @@ public class TelegramUpdateHandler : IUpdateHandler
     {
         var callbackQuery = update.CallbackQuery!;
         var chatId = callbackQuery.Message?.Chat.Id ?? callbackQuery.From.Id;
+
+        if (await IsRateLimitedAsync(RedisCacheKeys.RateLimitCallbacks(chatId), _redisOptions.CallbackRateLimitPerMinute, cancellationToken) is { IsLimited: true } rateLimit)
+        {
+            if (rateLimit.ShouldNotify)
+            {
+                await botClient.AnswerCallbackQuery(callbackQuery.Id, "Слишком много действий. Попробуй позже.", showAlert: true, cancellationToken: cancellationToken);
+            }
+
+            _logger.LogWarning("Callback rate limit exceeded for chat {ChatId} (count: {Count})", chatId, rateLimit.Count);
+            return;
+        }
 
         using var scope = _scopeFactory.CreateScope();
         var services = scope.ServiceProvider;
@@ -180,6 +211,29 @@ public class TelegramUpdateHandler : IUpdateHandler
            && session.FirstDelayMinutes is null
            && session.ExpectManualInput == false
            && session.LastBotMessageId is null;
+
+    private async Task<(bool IsLimited, bool ShouldNotify, long Count)> IsRateLimitedAsync(string key, int limit, CancellationToken cancellationToken)
+    {
+        if (limit <= 0)
+        {
+            return (false, false, 0);
+        }
+
+        var window = _redisOptions.GetRateLimitWindow();
+        if (window <= TimeSpan.Zero)
+        {
+            return (false, false, 0);
+        }
+
+        var count = await _cache.IncrementAsync(key, 1, window, cancellationToken);
+        if (count <= limit)
+        {
+            return (false, false, count);
+        }
+
+        var shouldNotify = count == limit + 1;
+        return (true, shouldNotify, count);
+    }
 
     protected virtual async Task<Message> SendTrackedMessageAsync(ITelegramBotClient botClient, long chatId, ConversationContext session, string text, InlineKeyboardMarkup? replyMarkup = null, CancellationToken cancellationToken = default)
     {

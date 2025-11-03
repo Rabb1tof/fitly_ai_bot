@@ -20,10 +20,10 @@ public sealed class NoOpRedisCacheService : IRedisCacheService
         => Task.FromResult(value);
 
     public Task<bool> AcquireLockAsync(string key, string value, TimeSpan ttl, CancellationToken cancellationToken = default)
-        => Task.FromResult(false);
+        => Task.FromResult(true);
 
     public Task<bool> ReleaseLockAsync(string key, string value, CancellationToken cancellationToken = default)
-        => Task.FromResult(false);
+        => Task.FromResult(true);
 
     public Task AddToSortedSetAsync(string key, string member, double score, CancellationToken cancellationToken = default)
         => Task.CompletedTask;
