@@ -14,6 +14,7 @@ using HealthBot.Infrastructure.Telegram.Commands.Abstractions;
 using HealthBot.Infrastructure.Telegram.Commands.Callback;
 using HealthBot.Infrastructure.Telegram.Commands.Message;
 using HealthBot.Shared.Options;
+using HealthBot.Tests.TestDoubles;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -33,12 +34,158 @@ namespace HealthBot.Tests;
 
 public class TimeZoneHelperTests
 {
+    private const int DefaultTtlMinutes = 10;
+    private const string CoverageReminderMessage = "К покрытию";
+
     [Fact]
     public void Resolve_WhenIdIsNull_ReturnsUtc()
     {
         var tz = TimeZoneHelper.Resolve(null);
 
         tz.Id.Should().Be(TimeZoneInfo.Utc.Id);
+    }
+
+    private static HealthBotDbContext CreateDbContext()
+    {
+        var options = new DbContextOptionsBuilder<HealthBotDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        return new HealthBotDbContext(options);
+    }
+
+    [Fact]
+    public async Task UserService_CachesUserProfileInRedis()
+    {
+        await using var dbContext = CreateDbContext();
+        var cache = new InMemoryRedisCacheService();
+        var redisOptions = Options.Create(new RedisOptions { ConnectionString = "localhost", DefaultTtlMinutes = DefaultTtlMinutes });
+
+        var service = new UserService(dbContext, cache, redisOptions);
+
+        var user = await service.RegisterUserAsync(42, "tester");
+
+        cache.TryGetRaw(RedisCacheKeys.UserProfile(42), out var cached).Should().BeTrue();
+        cached.Should().BeOfType<CoreUser>().Which.Username.Should().Be(user.Username);
+    }
+
+    [Fact]
+    public async Task UserService_UpdateUsername_RefreshesCache()
+    {
+        await using var dbContext = CreateDbContext();
+        var cache = new InMemoryRedisCacheService();
+        var redisOptions = Options.Create(new RedisOptions { ConnectionString = "localhost", DefaultTtlMinutes = 10 });
+
+        var service = new UserService(dbContext, cache, redisOptions);
+
+        var initial = await service.RegisterUserAsync(100, "old");
+        initial.Username.Should().Be("old");
+
+        var updated = await service.RegisterUserAsync(100, "new");
+
+        updated.Username.Should().Be("new");
+        cache.TryGetRaw(RedisCacheKeys.UserProfile(100), out var cached).Should().BeTrue();
+        cached.Should().BeOfType<CoreUser>().Which.Username.Should().Be("new");
+    }
+
+    [Fact]
+    public async Task ReminderService_SchedulesReminder_AddsToQueueAndDequeues()
+    {
+        await using var dbContext = CreateDbContext();
+        var cache = new InMemoryRedisCacheService();
+        var redisOptions = Options.Create(new RedisOptions
+        {
+            ConnectionString = "localhost",
+            ReminderBatchSize = 10,
+            ReminderLockSeconds = 30,
+            ReminderLookaheadMinutes = 5
+        });
+
+        var service = new ReminderService(dbContext, cache, redisOptions);
+
+        var user = new CoreUser
+        {
+            Id = Guid.NewGuid(),
+            TelegramId = 100,
+            Username = "tester"
+        };
+
+        dbContext.Users.Add(user);
+        await dbContext.SaveChangesAsync();
+
+        var scheduledAt = DateTime.UtcNow.AddSeconds(-5);
+        var reminder = await service.ScheduleReminderAsync(user.Id, CoverageReminderMessage, scheduledAt);
+
+        var queueSnapshot = cache.GetSortedSetSnapshot(RedisCacheKeys.ReminderQueue());
+        queueSnapshot.Should().ContainKey(reminder.Id.ToString("N"));
+
+        var now = DateTime.UtcNow;
+        var leases = await service.DequeueDueRemindersAsync(now, now.AddMinutes(1), CancellationToken.None);
+        leases.Should().HaveCount(1);
+        leases[0].Reminder.Id.Should().Be(reminder.Id);
+
+        await service.MarkAsSentAsync(new[] { leases[0].Reminder }, DateTime.UtcNow, CancellationToken.None);
+        await service.ReleaseReminderLockAsync(reminder.Id, leases[0].LockValue, CancellationToken.None);
+
+        cache.GetSortedSetSnapshot(RedisCacheKeys.ReminderQueue()).Should().NotContainKey(reminder.Id.ToString("N"));
+    }
+
+    [Fact]
+    public async Task ReminderService_FutureReminder_RemainsInQueueUntilDue()
+    {
+        await using var dbContext = CreateDbContext();
+        var cache = new InMemoryRedisCacheService();
+        var redisOptions = Options.Create(new RedisOptions
+        {
+            ConnectionString = "localhost",
+            ReminderBatchSize = 5,
+            ReminderLockSeconds = 30,
+            ReminderLookaheadMinutes = 5
+        });
+
+        var service = new ReminderService(dbContext, cache, redisOptions);
+        var user = new CoreUser { Id = Guid.NewGuid(), TelegramId = 200, Username = "tester" };
+        dbContext.Users.Add(user);
+        await dbContext.SaveChangesAsync();
+
+        var scheduledAt = DateTime.UtcNow.AddMinutes(2);
+        var reminder = await service.ScheduleReminderAsync(user.Id, CoverageReminderMessage, scheduledAt);
+
+        var now = DateTime.UtcNow;
+        var leases = await service.DequeueDueRemindersAsync(now, now.AddMinutes(3), CancellationToken.None);
+
+        leases.Should().BeEmpty();
+        cache.GetSortedSetSnapshot(RedisCacheKeys.ReminderQueue()).Should().ContainKey(reminder.Id.ToString("N"));
+    }
+
+    [Fact]
+    public async Task ReminderService_DequeueSkipsReminderWhenLockIsHeld()
+    {
+        await using var dbContext = CreateDbContext();
+        var cache = new InMemoryRedisCacheService();
+        var redisOptions = Options.Create(new RedisOptions
+        {
+            ConnectionString = "localhost",
+            ReminderBatchSize = 5,
+            ReminderLockSeconds = 30,
+            ReminderLookaheadMinutes = 5
+        });
+
+        var service = new ReminderService(dbContext, cache, redisOptions);
+        var user = new CoreUser { Id = Guid.NewGuid(), TelegramId = 300, Username = "tester" };
+        dbContext.Users.Add(user);
+        await dbContext.SaveChangesAsync();
+
+        var scheduledAt = DateTime.UtcNow.AddSeconds(-5);
+        var reminder = await service.ScheduleReminderAsync(user.Id, CoverageReminderMessage, scheduledAt);
+
+        await cache.AcquireLockAsync(RedisCacheKeys.ReminderLock(reminder.Id), "lock", TimeSpan.FromMinutes(1));
+
+        var now = DateTime.UtcNow;
+        var leases = await service.DequeueDueRemindersAsync(now, now.AddMinutes(1), CancellationToken.None);
+
+        leases.Should().BeEmpty();
+        cache.GetSortedSetSnapshot(RedisCacheKeys.ReminderQueue()).Should().ContainKey(reminder.Id.ToString("N"));
     }
 
     [Fact]
@@ -236,18 +383,77 @@ public class TelegramUpdateHandlerTests
         reminder.IsActive.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task MessageRateLimit_StopsSecondMessageWithinWindow()
+    {
+        var redisOptions = new RedisOptions
+        {
+            ConnectionString = "localhost",
+            MessageRateLimitPerMinute = 1,
+            RateLimitWindowSeconds = 60
+        };
+
+        var cache = new InMemoryRedisCacheService();
+
+        await using var harness = new HandlerHarness(cache, redisOptions);
+
+        await harness.SendTextAsync("/start");
+        harness.SentMessages.Should().NotBeEmpty();
+
+        var initialCount = harness.SentMessages.Count;
+        await harness.SendTextAsync("/menu");
+
+        harness.SentMessages.Should().HaveCount(initialCount);
+
+        cache.TryGetRaw(RedisCacheKeys.RateLimitMessages(ChatId), out var rawCount).Should().BeTrue();
+        rawCount.Should().BeOfType<long>().Which.Should().BeGreaterThan(1);
+    }
+
+    [Fact]
+    public async Task CallbackRateLimit_StopsSecondCallbackWithinWindow()
+    {
+        var redisOptions = new RedisOptions
+        {
+            ConnectionString = "localhost",
+            CallbackRateLimitPerMinute = 1,
+            RateLimitWindowSeconds = 60
+        };
+
+        var cache = new InMemoryRedisCacheService();
+
+        await using var harness = new HandlerHarness(cache, redisOptions);
+
+        await harness.SendTextAsync("/start");
+        harness.ClearMessages();
+
+        await harness.SendCallbackAsync(TelegramCommandNames.CallbackMainReminders);
+        var initialCount = harness.SentMessages.Count;
+
+        await harness.SendCallbackAsync(TelegramCommandNames.CallbackMainReminders);
+
+        harness.SentMessages.Should().HaveCount(initialCount);
+        cache.TryGetRaw(RedisCacheKeys.RateLimitCallbacks(ChatId), out var rawCount).Should().BeTrue();
+        rawCount.Should().BeOfType<long>().Which.Should().BeGreaterThan(1);
+    }
+
     private sealed class HandlerHarness : IAsyncDisposable
     {
         private readonly ServiceProvider _serviceProvider;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ITelegramCommandHandler[] _handlers;
         private readonly Mock<ITelegramBotClient> _botMock = new();
+        private readonly IRedisCacheService _redisCache;
+        private readonly RedisOptions _redisOptions;
 
         public HealthBotDbContext DbContext { get; }
         public TelegramUpdateHandler Handler { get; }
         public List<(string Text, InlineKeyboardMarkup? Markup)> SentMessages { get; } = new();
 
-        public HandlerHarness()
+        public Mock<ITelegramBotClient> BotMock => _botMock;
+        public IRedisCacheService RedisCache => _redisCache;
+        public RedisOptions RedisOptions => _redisOptions;
+
+        public HandlerHarness(IRedisCacheService? redisCache = null, RedisOptions? redisOptions = null)
         {
             var dbOptions = new DbContextOptionsBuilder<HealthBotDbContext>()
                 .UseInMemoryDatabase(Guid.NewGuid().ToString())
@@ -256,9 +462,11 @@ public class TelegramUpdateHandlerTests
             DbContext = new HealthBotDbContext(dbOptions);
 
             var services = new ServiceCollection();
+            _redisCache = redisCache ?? new NoOpRedisCacheService();
+            _redisOptions = redisOptions ?? new RedisOptions();
             services.AddSingleton(DbContext);
-            services.AddSingleton<IRedisCacheService, NoOpRedisCacheService>();
-            services.AddSingleton<IOptions<RedisOptions>>(_ => Options.Create(new RedisOptions()));
+            services.AddSingleton<IRedisCacheService>(_redisCache);
+            services.AddSingleton<IOptions<RedisOptions>>(_ => Options.Create(_redisOptions));
             services.AddScoped<UserService>();
             services.AddScoped<ReminderService>();
 
