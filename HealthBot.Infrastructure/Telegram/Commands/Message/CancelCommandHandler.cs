@@ -27,7 +27,7 @@ public sealed class CancelCommandHandler : MessageCommandHandlerBase
 
     protected override async Task HandleAsync(CommandContext context, TelegramMessage message)
     {
-        context.Session.Reset();
+        context.Session.ResetFlowState();
         await context.DeleteLastMessageAsync();
         await context.SendMessageAsync("Диалог сброшен. Используй /menu, чтобы начать заново.");
     }

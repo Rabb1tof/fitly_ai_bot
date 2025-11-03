@@ -20,7 +20,7 @@ public sealed class MenuCallbackHandler : CallbackCommandHandlerBase
 
     protected override Task HandleCallbackAsync(CommandContext context, CallbackQuery callbackQuery)
     {
-        context.Session.Reset();
+        context.Session.ResetFlowState();
         return MenuWorkflow.SendMainMenuAsync(context);
     }
 }
