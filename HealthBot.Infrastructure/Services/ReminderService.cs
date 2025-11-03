@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,6 +16,8 @@ public class ReminderService
     private readonly HealthBotDbContext _dbContext;
     private readonly IRedisCacheService _cache;
     private readonly RedisOptions _redisOptions;
+
+    public readonly record struct ReminderLease(Reminder Reminder, string LockValue);
 
     public ReminderService(
         HealthBotDbContext dbContext,
@@ -49,6 +50,7 @@ public class ReminderService
 
         await _dbContext.Reminders.AddAsync(reminder, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await EnqueueReminderAsync(reminder, cancellationToken);
         await InvalidateUserRemindersCacheAsync(userId, cancellationToken);
 
         return reminder;
@@ -62,9 +64,94 @@ public class ReminderService
             .ToListAsync(cancellationToken);
     }
 
+    public async Task<IReadOnlyList<ReminderLease>> DequeueDueRemindersAsync(DateTime utcNow, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_redisOptions.ConnectionString))
+        {
+            var dueReminders = await GetDueRemindersAsync(utcNow, cancellationToken);
+            return dueReminders.Select(r => new ReminderLease(r, string.Empty)).ToList();
+        }
+
+        var queueKey = RedisCacheKeys.ReminderQueue();
+        var maxScore = new DateTimeOffset(utcNow.ToUniversalTime()).ToUnixTimeMilliseconds();
+        var batchSize = Math.Max(1, _redisOptions.ReminderBatchSize);
+
+        var candidates = await _cache.RangeByScoreAsync(queueKey, double.NegativeInfinity, maxScore, batchSize, cancellationToken);
+        if (candidates.Count == 0)
+        {
+            return Array.Empty<ReminderLease>();
+        }
+
+        var lockTtl = _redisOptions.GetReminderLockTtl();
+        var locked = new List<(Guid ReminderId, string LockValue)>(candidates.Count);
+
+        foreach (var (member, _) in candidates)
+        {
+            if (!Guid.TryParseExact(member, "N", out var reminderId))
+            {
+                await _cache.RemoveFromSortedSetAsync(queueKey, member, cancellationToken);
+                continue;
+            }
+
+            var lockValue = Guid.NewGuid().ToString("N");
+            var lockKey = RedisCacheKeys.ReminderLock(reminderId);
+            if (await _cache.AcquireLockAsync(lockKey, lockValue, lockTtl, cancellationToken))
+            {
+                locked.Add((reminderId, lockValue));
+            }
+        }
+
+        if (locked.Count == 0)
+        {
+            return Array.Empty<ReminderLease>();
+        }
+
+        var reminderIds = locked.Select(x => x.ReminderId).ToList();
+        var lockMap = locked.ToDictionary(x => x.ReminderId, x => x.LockValue);
+
+        var reminders = await _dbContext.Reminders
+            .Include(r => r.User)
+            .Where(r => reminderIds.Contains(r.Id))
+            .ToListAsync(cancellationToken);
+
+        var remindersById = reminders.ToDictionary(r => r.Id);
+        var leases = new List<ReminderLease>(reminders.Count);
+
+        foreach (var reminderId in reminderIds)
+        {
+            if (!remindersById.TryGetValue(reminderId, out var reminder))
+            {
+                await RemoveReminderFromQueueAsync(reminderId, cancellationToken);
+                await ReleaseReminderLockAsync(reminderId, lockMap[reminderId], cancellationToken);
+                continue;
+            }
+
+            if (!reminder.IsActive)
+            {
+                await RemoveReminderFromQueueAsync(reminder.Id, cancellationToken);
+                await ReleaseReminderLockAsync(reminder.Id, lockMap[reminder.Id], cancellationToken);
+                continue;
+            }
+
+            if (reminder.NextTriggerAt > utcNow)
+            {
+                await EnqueueReminderAsync(reminder, cancellationToken);
+                await ReleaseReminderLockAsync(reminder.Id, lockMap[reminder.Id], cancellationToken);
+                continue;
+            }
+
+            await RemoveReminderFromQueueAsync(reminder.Id, cancellationToken);
+            leases.Add(new ReminderLease(reminder, lockMap[reminder.Id]));
+        }
+
+        return leases;
+    }
+
     public async Task MarkAsSentAsync(IEnumerable<Reminder> reminders, DateTime triggeredAt, CancellationToken cancellationToken = default)
     {
         var affectedUsers = new HashSet<Guid>();
+        var requeue = new List<Reminder>();
+        var removeFromQueue = new List<Guid>();
 
         foreach (var reminder in reminders)
         {
@@ -77,12 +164,28 @@ public class ReminderService
             else
             {
                 reminder.IsActive = false;
+                removeFromQueue.Add(reminder.Id);
             }
 
             affectedUsers.Add(reminder.UserId);
+
+            if (reminder.IsActive)
+            {
+                requeue.Add(reminder);
+            }
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        foreach (var reminder in requeue)
+        {
+            await EnqueueReminderAsync(reminder, cancellationToken);
+        }
+
+        if (removeFromQueue.Count > 0)
+        {
+            await RemoveFromQueueAsync(removeFromQueue, cancellationToken);
+        }
 
         foreach (var userId in affectedUsers)
         {
@@ -111,6 +214,7 @@ public class ReminderService
 
         reminder.IsActive = false;
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await RemoveFromQueueAsync(reminderId, cancellationToken);
         await InvalidateUserRemindersCacheAsync(userId, cancellationToken);
         return true;
     }
@@ -172,6 +276,38 @@ public class ReminderService
 
     private Task InvalidateUserRemindersCacheAsync(Guid userId, CancellationToken cancellationToken)
         => _cache.RemoveAsync(RedisCacheKeys.UserReminders(userId), cancellationToken);
+
+    public Task<Reminder?> GetReminderWithUserAsync(Guid reminderId, CancellationToken cancellationToken = default)
+        => _dbContext.Reminders
+            .Include(r => r.User)
+            .FirstOrDefaultAsync(r => r.Id == reminderId, cancellationToken);
+
+    public Task RemoveReminderFromQueueAsync(Guid reminderId, CancellationToken cancellationToken = default)
+        => RemoveFromQueueAsync(reminderId, cancellationToken);
+
+    public Task RemoveRemindersFromQueueAsync(IEnumerable<Guid> reminderIds, CancellationToken cancellationToken = default)
+        => RemoveFromQueueAsync(reminderIds, cancellationToken);
+
+    public Task ReleaseReminderLockAsync(Guid reminderId, string lockValue, CancellationToken cancellationToken = default)
+        => _cache.ReleaseLockAsync(RedisCacheKeys.ReminderLock(reminderId), lockValue, cancellationToken);
+
+    public Task RequeueReminderAsync(Reminder reminder, CancellationToken cancellationToken = default)
+        => EnqueueReminderAsync(reminder, cancellationToken);
+
+    private Task EnqueueReminderAsync(Reminder reminder, CancellationToken cancellationToken)
+    {
+        var score = new DateTimeOffset(reminder.NextTriggerAt.ToUniversalTime()).ToUnixTimeMilliseconds();
+        return _cache.AddToSortedSetAsync(RedisCacheKeys.ReminderQueue(), reminder.Id.ToString("N"), score, cancellationToken);
+    }
+
+    private Task RemoveFromQueueAsync(Guid reminderId, CancellationToken cancellationToken)
+        => _cache.RemoveFromSortedSetAsync(RedisCacheKeys.ReminderQueue(), reminderId.ToString("N"), cancellationToken);
+
+    private Task RemoveFromQueueAsync(IEnumerable<Guid> reminderIds, CancellationToken cancellationToken)
+    {
+        var members = reminderIds.Select(id => id.ToString("N"));
+        return _cache.RemoveFromSortedSetAsync(RedisCacheKeys.ReminderQueue(), members, cancellationToken);
+    }
 
     private static List<ReminderTemplate> CloneTemplates(IEnumerable<ReminderTemplate> templates)
         => templates.Select(CloneTemplate).ToList();
