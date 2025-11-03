@@ -23,9 +23,13 @@ ConnectionStrings__Postgres=Host=localhost;Port=5432;Database=healthbot;Username
 Redis__ConnectionString=localhost:6379
 Redis__KeyPrefix=healthbot:
 Redis__DefaultTtlMinutes=30
-
-# Настройки воркера (опционально)
-ReminderWorker__PollingIntervalSeconds=60
+Redis__MessageRateLimitPerMinute=30
+Redis__CallbackRateLimitPerMinute=60
+Redis__RateLimitWindowSeconds=60
+Redis__ReminderLockSeconds=30
+Redis__ReminderBatchSize=50
+Redis__ReminderLookaheadMinutes=30
+Redis__ReminderWorkerPollSeconds=5
 ```
 > Не коммитите `.env`; используйте `.env.example` для шаблона.
 
@@ -40,7 +44,7 @@ dotnet user-secrets set "TELEGRAM_BOT_TOKEN" "1234567890:abcdefg" --project Heal
 docker compose up -d --build
 ```
 - Контейнер `healthbot_api` применяет миграции и запускает long polling.
-- Контейнер `healthbot_redis` поднимает Redis (используется для хранения сессий и кэша, см. `Redis__ConnectionString`).
+- Контейнер `healthbot_redis` поднимает Redis. Он используется для хранения сессий, кэшей, rate limiting и очереди напоминаний (см. `Redis__*`).
 - Логи: `docker compose logs -f healthbot_api`.
 - Остановить и очистить данные: `docker compose down -v`.
 
@@ -82,6 +86,8 @@ docker compose up -d --build
 | Ошибка удаления сообщений | Проверьте, что `LastBotMessageId` не сбрасывается досрочно и бот имеет права удалять сообщение. |
 | ReminderWorker не отправляет уведомления | Проверьте логи, убедитесь, что время напоминаний наступило и пользователь имеет таймзону. |
 | Redis не подключается | Убедитесь, что `Redis__ConnectionString` корректен и контейнер `healthbot_redis` в статусе `healthy`. |
+| Срабатывает rate limiting | При необходимости поднимите `Redis__MessageRateLimitPerMinute` / `Redis__CallbackRateLimitPerMinute` или очистите ключи `rl:*` через `redis-cli`. |
+| Напоминания не попадают в очередь | Проверьте ключ `reminders:queue` в Redis и убедитесь, что `Redis__ReminderWorkerPollSeconds` не слишком велик. |
 
 ## Обновление
 - Перед обновлением схемы БД создайте резервную копию (`pg_dump`).

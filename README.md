@@ -52,8 +52,10 @@ docker compose up -d --build
 - Ключевые переменные:
   - `TELEGRAM_BOT_TOKEN`
   - `ConnectionStrings__Postgres`
-  - опционально `Redis__ConnectionString`, `Redis__DefaultTtlMinutes`
-  - опциональные `ReminderWorker__PollingIntervalSeconds` и т. д.
+  - опциональные настройки Redis: `Redis__ConnectionString`, `Redis__KeyPrefix`, `Redis__DefaultTtlMinutes`
+  - для rate limiting: `Redis__MessageRateLimitPerMinute`, `Redis__CallbackRateLimitPerMinute`, `Redis__RateLimitWindowSeconds`
+  - для планировщика напоминаний: `Redis__ReminderLockSeconds`, `Redis__ReminderBatchSize`, `Redis__ReminderLookaheadMinutes`, `Redis__ReminderWorkerPollSeconds`
+- При отсутствии Redis автоматически используются in-memory реализации (сессии, кэши, воркер).
 - Миграции и сиды напоминаний описаны в [docs/setup.md](docs/setup.md#миграции-и-инициализация).
 
 ## Команды разработки

@@ -18,6 +18,8 @@
 | Остановка и очистка данных | `docker compose down -v` |
 | Проверка БД | `psql -h localhost -U healthbot -d healthbot` |
 | Проверка Redis | `redis-cli -h localhost -p 6379 ping` (в Docker: `docker compose exec redis redis-cli ping`) |
+| Просмотр очереди напоминаний | `redis-cli ZRANGE reminders:queue 0 -1 WITHSCORES` |
+| Очистка rate limiting ключей | `redis-cli --scan --pattern "rl:*" | xargs -I{} redis-cli DEL {}` |
 | Форматирование кода | `dotnet format` |
 
 ## Управление секретами
@@ -38,6 +40,8 @@
 | Ошибки при удалении сообщений | `LastBotMessageId` должен быть валиден; проверьте права бота в чате. |
 | Миграции падают | Проверить строку подключения, права пользователя БД. |
 | Redis-операции не работают | Проверьте, что `Redis__ConnectionString` задан, контейнер `healthbot_redis` доступен и `redis-cli ping` возвращает PONG. |
+| Напоминания не доставляются | Проверьте `reminders:queue` в Redis, логи `ReminderWorker`, убедитесь, что бот может писать в чат. |
+| Воркер спамит повторно | Очистите ключи `reminders:queue` и `lock:reminder:*`, проверьте `ReminderBatchSize` и `ReminderWorkerPollSeconds`. |
 
 ## Резервное копирование
 - Рекомендуется регулярный backup БД (`pg_dump` / `pg_dumpall`).

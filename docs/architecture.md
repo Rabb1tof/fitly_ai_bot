@@ -18,7 +18,14 @@
 | **HealthBot.Shared** | Общие модели и настройки (`TelegramOptions`, `ReminderWorkerOptions`). |
 | **HealthBot.Tests** | Интеграционные и unit-тесты для Telegram-сценариев, вспомогательные хелперы. |
 
-Внешние зависимости: PostgreSQL 16 (Docker Compose), Telegram Bot API, .NET 9 SDK.
+Внешние зависимости: PostgreSQL 16 (Docker Compose), Telegram Bot API, .NET 9 SDK, Redis 7 (для кэшей и очереди напоминаний).
+
+### Redis в архитектуре
+- `session:{chatId}` — состояние `ConversationContext` для каждого чата.
+- `user:{telegramId}` — кэш профиля пользователя, ускоряющий повторные запросы.
+- `reminders:queue` — SortedSet с напоминаниями и их `NextTriggerAt`, из которого читает `ReminderWorker`.
+- `reminder_templates` и `reminders:user:{guid}` — кэши системных шаблонов и активных напоминаний пользователя.
+- `rl:msg:{chatId}` / `rl:cb:{chatId}` — ключи для rate limiting сообщений и callback-ов.
 
 ## Потоки данных
 
