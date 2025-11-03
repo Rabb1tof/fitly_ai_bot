@@ -20,7 +20,7 @@ public sealed class MainRemindersCallbackHandler : CallbackCommandHandlerBase
 
     protected override Task HandleCallbackAsync(CommandContext context, CallbackQuery callbackQuery)
     {
-        context.Session.Reset();
+        context.Session.ResetFlowState();
         return ReminderWorkflow.ShowDashboardAsync(context);
     }
 }

@@ -30,7 +30,7 @@ public sealed class StartCommandHandler : MessageCommandHandlerBase
 
     protected override Task HandleAsync(CommandContext context, TelegramMessage message)
     {
-        context.Session.Reset();
+        context.Session.ResetFlowState();
         var text = message.Text!.Trim();
         var intro = text.Equals("/start", StringComparison.OrdinalIgnoreCase)
             ? "Привет! Я Fitly.AI 🩺\n\nВыбери раздел ниже."
