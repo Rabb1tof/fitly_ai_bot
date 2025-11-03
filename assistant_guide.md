@@ -1,52 +1,53 @@
 # Assistant Guide — HealthBot
 
 ## Общие правила
-1. Всегда отвечать пользователю на русском языке и держать ответы краткими.
-2. В первую очередь опираться на документацию в каталоге `docs/` и актуальный код.
-3. Не выполнять потенциально деструктивные действия без явного разрешения пользователя.
-4. Секреты (токен Telegram, строки подключения) хранить во внешних источниках (`dotnet user-secrets`, переменные окружения). Не коммитить реальные значения.
+1. Всегда отвечать пользователю на русском языке и держать ответы лаконичными.
+2. Основываться на актуальных данных: код проекта и документы в `docs/` (особенно `architecture.md`, `setup.md`, `operations.md`).
+3. Не выполнять деструктивные и сетевые действия без явного разрешения пользователя.
+4. Секреты (Telegram токен, строки подключения) хранить вне репозитория (`.env`, user-secrets, секреты CI). Никогда не коммитить реальные значения.
 
 ## Структура решения
-- **HealthBot.Api** — веб-API (.NET 9), регистрация DI, health-check endpoint `/`.
-- **HealthBot.Core** — доменные сущности (`User`, `Reminder`) и будущие доменные сервисы.
-- **HealthBot.Infrastructure** — `HealthBotDbContext`, EF Core, сервисы работы с пользователями/напоминаниями, фоновый воркер, интеграция Telegram.Bot.
-- **HealthBot.Shared** — общие DTO и опции (`TelegramOptions`).
-- Корневой `docker-compose.yml` поднимает PostgreSQL 16 с пользователем `healthbot`.
+- `HealthBot.Api` — ASP.NET Core host, DI, запуск `TelegramPollingService` и `ReminderWorker`, миграции.
+- `HealthBot.Core` — сущности и доменные типы.
+- `HealthBot.Infrastructure` — DbContext, сервисы (`UserService`, `ReminderService`), Telegram update pipeline, фоновые задачи.
+- `HealthBot.Shared` — опции (`TelegramOptions`, `ReminderWorkerOptions`), вспомогательные модели.
+- `HealthBot.Tests` — интеграционные сценарии для Telegram и unit-тесты.
+- `docker-compose.yml` поднимает PostgreSQL и API контейнер.
 
-## Основной workflow
-1. **БД**: запуск `docker-compose up -d`.
-2. **Миграции**:
+Ссылки на документацию: см. `docs/architecture.md` и `README.md`.
+
+## Основной workflow (см. также `docs/setup.md`)
+1. Подготовить `.env`/user-secrets (`TELEGRAM_BOT_TOKEN`, `ConnectionStrings__Postgres`).
+2. Для Docker: `docker compose up -d --build` — миграции применяются автоматически.
+3. Для локальной разработки:
    ```bash
-   dotnet tool install --global dotnet-ef   # один раз
-   dotnet ef migrations add <Name> -p HealthBot.Infrastructure -s HealthBot.Api
    dotnet ef database update -p HealthBot.Infrastructure -s HealthBot.Api
+   dotnet run --project HealthBot.Api
    ```
-3. **Запуск API**:
-   - В контейнерах: `TELEGRAM_BOT_TOKEN=<token> docker-compose up --build`
-   - Локально: `dotnet run --project HealthBot.Api` (нужны переменные окружения и запущенный Postgres)
-4. **Создание данных** — использовать /remind в Telegram (polling слушает команды), либо временные скрипты.
-5. **Тестирование** — проверить логи `ReminderWorker` и убедиться, что сообщения отправляются ботом.
+4. Проверить логи (polling должен стартовать) и убедиться, что бот отвечает на `/start` и `/menu`.
+5. Напоминания создаются пользователем через шаблон/кастомный сценарий (см. `docs/telegram-flows.md`).
 
 ## Сервисы и зависимости
-- DI регистрируется в `Program.cs` (DbContext, UserService, ReminderService, ReminderWorker, ITelegramBotClient, TelegramUpdateHandler, TelegramPollingService).
-- `ReminderWorker` работает как `BackgroundService`, опрашивая БД каждые 60 секунд и отправляя напоминания.
-- Polling запускается через `TelegramPollingService`, команды `/start` и `/remind` поддерживаются.
+- DI настраивается в `Program.cs` (`HealthBot.Api`).
+- `ReminderWorker` — `BackgroundService`, интервал задаётся в `ReminderWorkerOptions`.
+- Командный конвейер: `TelegramPollingService` → `TelegramUpdateHandler` → `CommandDispatcher` → обработчики (`Message`/`Callback`).
+- Детали в `docs/architecture.md`.
 
 ## Рекомендации по разработке
-1. Следить за миграциями: любые изменения сущностей отражать миграциями.
-2. Добавлять логирование через `ILogger<T>`.
-3. Для новых внешних интеграций создавать отдельные сервисы в Infrastructure и описывать настройки в Shared.
-4. При расширении функциональности (например, добавление webhook) обновлять `docs/analysis.md` и `docs/implementation_plan.md`.
-5. Перед внедрением очередей/LLM подготовить технико-архитектурный документ.
+1. Любые изменения в сущностях сопровождать миграциями (`docs/setup.md`).
+2. Использовать `ILogger<T>` и `CancellationToken` в асинхронных методах.
+3. Новые команды Telegram оформлять отдельными обработчиками с корректным `Priority` и проверками.
+4. Обновлять документацию (`README.md`, `docs/`) при изменении архитектуры или сценариев.
+5. Для новых интеграций описывать настройки в `Shared` и документировать в `docs/architecture.md` или отдельных файлах.
 
 ## Диагностика и отладка
-- Проверка БД: `psql -h localhost -U healthbot -d healthbot -c "SELECT * FROM users;"`.
-- Логи приложения — стандартный вывод `dotnet run`.
-- Telegram: контролировать отправку сообщений через логи и `getUpdates` (при тестах локально);
-  при работе в Docker — следить за логами сервисов `api` и `postgres`.
+- Логи: `docker compose logs -f healthbot_api` или stdout `dotnet run`.
+- БД: `psql -h localhost -U healthbot -d healthbot -c "SELECT * FROM reminder_templates;"`.
+- Telegram: при необходимости использовать `getUpdates`, но не включать webhook с активным polling.
+- Troubleshooting описан в `docs/setup.md#типичные-проблемы` и `docs/operations.md`.
 
-## TODO для будущих итераций
-- Добавить интеграционные тесты.
-- Рассмотреть Serilog + Seq для логирования.
-- Подготовить CI/CD pipeline (GitHub Actions или Azure DevOps).
-- Рассмотреть кеш Redis и брокер (RabbitMQ) для повышения надёжности.
+## TODO / roadmap
+- Добавить интеграционные и e2e тесты, подключить `dotnet test` к CI/CD.
+- Внедрить структурированное логирование (Serilog + Seq), health-checks и метрики.
+- Рассмотреть использование Redis/RabbitMQ для масштабирования напоминаний.
+- Документировать админ-функциональность при её появлении.
