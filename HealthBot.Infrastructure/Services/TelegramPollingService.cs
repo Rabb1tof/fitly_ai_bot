@@ -1,8 +1,10 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using HealthBot.Shared.Options;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Telegram.Bot;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Types.Enums;
@@ -14,15 +16,18 @@ public class TelegramPollingService : BackgroundService
     private readonly ITelegramBotClient _botClient;
     private readonly IUpdateHandler _updateHandler;
     private readonly ILogger<TelegramPollingService> _logger;
+    private readonly TimeSpan _restartInterval;
 
     public TelegramPollingService(
         ITelegramBotClient botClient,
         IUpdateHandler updateHandler,
-        ILogger<TelegramPollingService> logger)
+        ILogger<TelegramPollingService> logger,
+        IOptions<TelegramOptions> telegramOptions)
     {
         _botClient = botClient;
         _updateHandler = updateHandler;
         _logger = logger;
+        _restartInterval = telegramOptions.Value.GetPollingRestartInterval();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -35,15 +40,36 @@ public class TelegramPollingService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            CancellationTokenSource? linkedCts = null;
             try
             {
                 var me = await _botClient.GetMe(stoppingToken);
                 _logger.LogInformation("Starting polling for @{BotUsername}", me.Username ?? "unknown");
 
+                var effectiveToken = stoppingToken;
+                if (_restartInterval > TimeSpan.Zero)
+                {
+                    linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                    linkedCts.CancelAfter(_restartInterval);
+                    effectiveToken = linkedCts.Token;
+                }
+
                 await _botClient.ReceiveAsync(
                     updateHandler: _updateHandler,
                     receiverOptions: receiverOptions,
-                    cancellationToken: stoppingToken);
+                    cancellationToken: effectiveToken);
+            }
+            catch (OperationCanceledException) when (linkedCts is not null && !stoppingToken.IsCancellationRequested)
+            {
+                _logger.LogInformation("Restarting polling after {Interval}", _restartInterval);
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
             catch (OperationCanceledException)
             {
@@ -60,6 +86,10 @@ public class TelegramPollingService : BackgroundService
                 {
                     break;
                 }
+            }
+            finally
+            {
+                linkedCts?.Dispose();
             }
         }
     }
