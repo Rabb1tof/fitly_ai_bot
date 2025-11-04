@@ -32,26 +32,42 @@ public class UserService
 
         if (cachedUser is not null)
         {
-            var trackedUser = _dbContext.Attach(cachedUser).Entity;
-            if (username is not null && !string.Equals(trackedUser.Username, username, StringComparison.Ordinal))
+            if (username is not null && !string.Equals(cachedUser.Username, username, StringComparison.Ordinal))
             {
-                trackedUser.Username = username;
-                await _dbContext.SaveChangesAsync(cancellationToken);
-                await CacheUserAsync(trackedUser, cancellationToken);
+                var userToUpdate = await _dbContext.Users
+                    .FirstOrDefaultAsync(u => u.TelegramId == telegramId, cancellationToken);
+                
+                if (userToUpdate is not null)
+                {
+                    userToUpdate.Username = username;
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                    _dbContext.Entry(userToUpdate).State = EntityState.Detached;
+                    cachedUser.Username = username;
+                    await CacheUserAsync(cachedUser, cancellationToken);
+                }
             }
 
-            return trackedUser;
+            return cachedUser;
         }
 
         var existingUser = await _dbContext.Users
+            .AsNoTracking()
             .FirstOrDefaultAsync(u => u.TelegramId == telegramId, cancellationToken);
 
         if (existingUser is not null)
         {
             if (username is not null && !string.Equals(existingUser.Username, username, StringComparison.Ordinal))
             {
-                existingUser.Username = username;
-                await _dbContext.SaveChangesAsync(cancellationToken);
+                var userToUpdate = await _dbContext.Users
+                    .FirstOrDefaultAsync(u => u.TelegramId == telegramId, cancellationToken);
+                
+                if (userToUpdate is not null)
+                {
+                    userToUpdate.Username = username;
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                    _dbContext.Entry(userToUpdate).State = EntityState.Detached;
+                    existingUser.Username = username;
+                }
             }
 
             await CacheUserAsync(existingUser, cancellationToken);
@@ -66,6 +82,7 @@ public class UserService
 
         _dbContext.Users.Add(user);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _dbContext.Entry(user).State = EntityState.Detached;
         await CacheUserAsync(user, cancellationToken);
 
         return user;
@@ -73,12 +90,22 @@ public class UserService
 
     public async Task SetUserTimeZoneAsync(User user, string timeZoneId, CancellationToken cancellationToken = default)
     {
-        if (user.TimeZoneId != timeZoneId)
+        var userToUpdate = await _dbContext.Users
+            .FirstOrDefaultAsync(u => u.Id == user.Id, cancellationToken);
+        
+        if (userToUpdate is null)
         {
+            return;
+        }
+
+        if (userToUpdate.TimeZoneId != timeZoneId)
+        {
+            userToUpdate.TimeZoneId = timeZoneId;
+            await _dbContext.SaveChangesAsync(cancellationToken);
             user.TimeZoneId = timeZoneId;
         }
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        _dbContext.Entry(userToUpdate).State = EntityState.Detached;
         await CacheUserAsync(user, cancellationToken);
     }
 

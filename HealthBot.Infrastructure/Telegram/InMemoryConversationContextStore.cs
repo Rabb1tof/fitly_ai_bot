@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 
 namespace HealthBot.Infrastructure.Telegram;
 
-public sealed class InMemoryConversationContextStore : IConversationContextStore
+public sealed class InMemoryConversationContextStore : IConversationContextStore, IDisposable
 {
     private sealed class SessionEntry
     {
@@ -29,12 +29,15 @@ public sealed class InMemoryConversationContextStore : IConversationContextStore
     private readonly TimeSpan _sessionTtl;
     private readonly TimeSpan _cleanupInterval = TimeSpan.FromMinutes(5);
     private long _nextCleanupTicks;
+    private readonly Timer _cleanupTimer;
+    private bool _disposed;
 
     public InMemoryConversationContextStore(IOptions<RedisOptions> options)
     {
         _sessionTtl = options?.Value?.GetDefaultTtl() ?? TimeSpan.FromMinutes(30);
         var nextCleanup = DateTimeOffset.UtcNow.Add(_cleanupInterval).Ticks;
         Interlocked.Exchange(ref _nextCleanupTicks, nextCleanup);
+        _cleanupTimer = new Timer(_ => CleanupExpiredSessions(), null, _cleanupInterval, _cleanupInterval);
     }
 
     public Task<ConversationContext> GetSessionAsync(long chatId, CancellationToken cancellationToken = default)
@@ -105,6 +108,22 @@ public sealed class InMemoryConversationContextStore : IConversationContextStore
             return;
         }
 
+        CleanupExpiredSessions(now);
+    }
+
+    private void CleanupExpiredSessions()
+    {
+        var now = DateTimeOffset.UtcNow;
+        CleanupExpiredSessions(now);
+    }
+
+    private void CleanupExpiredSessions(DateTimeOffset now)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
         foreach (var pair in _sessions)
         {
             if (pair.Value.IsExpired(now))
@@ -112,5 +131,17 @@ public sealed class InMemoryConversationContextStore : IConversationContextStore
                 _sessions.TryRemove(pair.Key, out _);
             }
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _cleanupTimer.Dispose();
+        GC.SuppressFinalize(this);
     }
 }

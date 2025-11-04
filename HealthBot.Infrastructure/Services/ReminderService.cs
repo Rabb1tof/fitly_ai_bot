@@ -50,6 +50,7 @@ public class ReminderService
 
         await _dbContext.Reminders.AddAsync(reminder, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _dbContext.Entry(reminder).State = EntityState.Detached;
         await EnqueueReminderAsync(reminder, cancellationToken);
         await InvalidateUserRemindersCacheAsync(userId, cancellationToken);
 
@@ -184,6 +185,11 @@ public class ReminderService
 
         await _dbContext.SaveChangesAsync(cancellationToken);
 
+        foreach (var reminder in reminders)
+        {
+            _dbContext.Entry(reminder).State = EntityState.Detached;
+        }
+
         foreach (var reminder in requeue)
         {
             await EnqueueReminderAsync(reminder, cancellationToken);
@@ -221,6 +227,7 @@ public class ReminderService
 
         reminder.IsActive = false;
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _dbContext.Entry(reminder).State = EntityState.Detached;
         await RemoveFromQueueAsync(reminderId, cancellationToken);
         await InvalidateUserRemindersCacheAsync(userId, cancellationToken);
         return true;
