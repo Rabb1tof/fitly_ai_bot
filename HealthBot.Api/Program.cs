@@ -20,9 +20,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<TelegramOptions>(builder.Configuration.GetSection(TelegramOptions.SectionName));
 builder.Services.Configure<RedisOptions>(builder.Configuration.GetSection(RedisOptions.SectionName));
 
-builder.Services.AddDbContext<HealthBotDbContext>(options =>
+builder.Services.AddDbContextPool<HealthBotDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Postgres"),
-        npgsqlOptions => npgsqlOptions.MigrationsAssembly(typeof(HealthBotDbContext).Assembly.GetName().Name)));
+        npgsqlOptions => npgsqlOptions.MigrationsAssembly(typeof(HealthBotDbContext).Assembly.GetName().Name)),
+    poolSize: 128);
 
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<ReminderService>();
