@@ -39,6 +39,9 @@
 3. Новые команды Telegram оформлять отдельными обработчиками с корректным `Priority` и проверками.
 4. Обновлять документацию (`README.md`, `docs/`) при изменении архитектуры или сценариев.
 5. Для новых интеграций описывать настройки в `Shared` и документировать в `docs/architecture.md` или отдельных файлах.
+6. **КРИТИЧНО:** Всегда отсоединять сущности через `EntityState.Detached` после `SaveChangesAsync` при использовании DbContext pooling.
+7. Использовать `AsNoTracking()` для read-only запросов к БД.
+8. Избегать `Attach()` кешированных объектов — загружать свежие сущности для обновления.
 
 ## Диагностика и отладка
 - Логи: `docker compose logs -f healthbot_api` или stdout `dotnet run`.
@@ -46,8 +49,24 @@
 - Telegram: при необходимости использовать `getUpdates`, но не включать webhook с активным polling.
 - Troubleshooting описан в `docs/setup.md#типичные-проблемы` и `docs/operations.md`.
 
+## Оптимизация памяти (см. `docs/memory_optimization.md`)
+
+**Реализовано:**
+- ✅ DbContext pooling (poolSize: 128) для снижения аллокаций
+- ✅ Периодическая очистка InMemoryConversationContextStore через Timer
+- ✅ Отсоединение сущностей в UserService и ReminderService
+- ✅ CreateAsyncScope вместо CreateScope в TelegramUpdateHandler
+- ✅ Нагрузочные тесты (1000+ пользователей) в `HealthBot.Tests/LoadTests/`
+
+**Запуск нагрузочных тестов:**
+```bash
+./scripts/run-load-tests.sh
+```
+
+**Важно:** При работе с EF Core всегда проверять, что `ChangeTracker.Entries().Count() == 0` после обработки запроса.
+
 ## TODO / roadmap
-- Добавить интеграционные и e2e тесты, подключить `dotnet test` к CI/CD.
-- Внедрить структурированное логирование (Serilog + Seq), health-checks и метрики.
-- Рассмотреть использование Redis/RabbitMQ для масштабирования напоминаний.
+- Внедрить структурированное логирование (Serilog + Seq), health-checks и метрики (Prometheus/Grafana).
+- Настроить алерты на рост памяти и аномалии GC.
 - Документировать админ-функциональность при её появлении.
+- Рассмотреть использование RabbitMQ для масштабирования напоминаний.

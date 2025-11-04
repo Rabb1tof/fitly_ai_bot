@@ -43,17 +43,13 @@ public class TelegramPollingService : BackgroundService
             CancellationTokenSource? linkedCts = null;
             try
             {
-                var me = await _botClient.GetMe(stoppingToken);
-                _logger.LogInformation("Starting polling for @{BotUsername}", me.Username ?? "unknown");
-
-                var effectiveToken = stoppingToken;
                 if (_restartInterval > TimeSpan.Zero)
                 {
                     linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                     linkedCts.CancelAfter(_restartInterval);
-                    effectiveToken = linkedCts.Token;
                 }
 
+                var effectiveToken = linkedCts?.Token ?? stoppingToken;
                 await _botClient.ReceiveAsync(
                     updateHandler: _updateHandler,
                     receiverOptions: receiverOptions,
