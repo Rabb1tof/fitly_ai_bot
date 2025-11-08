@@ -41,7 +41,7 @@ docker compose up -d --build
 ## Структура решения
 - `HealthBot.Api` — конфигурация DI, запуск фоновых сервисов, миграции.
 - `HealthBot.Core` — доменные сущности (`User`, `Reminder`, `ReminderTemplate`).
-- `HealthBot.Infrastructure` — DbContext, Telegram-потоки, фоновые задачи, инфраструктура Redis.
+- `HealthBot.Infrastructure` — DbContext, Telegram-потоки, фоновые задачи, инфраструктура Redis и постоянное хранение сессий в PostgreSQL (`conversation_sessions`).
 - `HealthBot.Shared` — общие модели и настройки.
 - `HealthBot.Tests` — интеграционные и unit-тесты для Telegram-потоков и сервисов.
 
@@ -52,9 +52,9 @@ docker compose up -d --build
 - Ключевые переменные:
   - `TELEGRAM_BOT_TOKEN`
   - `ConnectionStrings__Postgres`
-  - опциональные настройки Redis: `Redis__ConnectionString`, `Redis__KeyPrefix`, `Redis__DefaultTtlMinutes`
-  - для rate limiting: `Redis__MessageRateLimitPerMinute`, `Redis__CallbackRateLimitPerMinute`, `Redis__RateLimitWindowSeconds`
-  - для планировщика напоминаний: `Redis__ReminderLockSeconds`, `Redis__ReminderBatchSize`, `Redis__ReminderLookaheadMinutes`, `Redis__ReminderWorkerPollSeconds`
+  - опциональные настройки Redis: `Redis__ConnectionString`, `Redis__KeyPrefix`, `Redis__DefaultTtlMinutes`, `Redis__ConversationSessionTtlMinutes`
+- для rate limiting: `Redis__MessageRateLimitPerMinute`, `Redis__CallbackRateLimitPerMinute`, `Redis__RateLimitWindowSeconds`
+- для планировщика напоминаний: `Redis__ReminderLockSeconds`, `Redis__ReminderBatchSize`, `Redis__ReminderLookaheadMinutes`, `Redis__ReminderWorkerPollSeconds`, `Redis__ReminderQueueRecoveryWindowMinutes`
 - При отсутствии Redis автоматически используются in-memory реализации (сессии, кэши, воркер).
 - Миграции и сиды напоминаний описаны в [docs/setup.md](docs/setup.md#миграции-и-инициализация).
 
