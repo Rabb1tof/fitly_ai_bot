@@ -61,7 +61,9 @@ public sealed class RedisCacheService : IRedisCacheService
             : JsonSerializer.Serialize(value, SerializerOptions);
 
         var expiry = ttl ?? _options.GetDefaultTtl();
-        await Database.StringSetAsync(BuildKey(key), payload, expiry).ConfigureAwait(false);
+        TimeSpan? effectiveExpiry = expiry == TimeSpan.Zero ? null : expiry;
+
+        await Database.StringSetAsync(BuildKey(key), payload, effectiveExpiry).ConfigureAwait(false);
     }
 
     public async Task<bool> RemoveAsync(string key, CancellationToken cancellationToken = default)

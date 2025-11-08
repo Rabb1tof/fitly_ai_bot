@@ -16,12 +16,26 @@ public sealed class RedisOptions
     public int ReminderBatchSize { get; set; } = 50;
     public int ReminderLookaheadMinutes { get; set; } = 30;
     public int ReminderWorkerPollSeconds { get; set; } = 5;
+    public int ConversationSessionTtlMinutes { get; set; } = 720;
+    public int ReminderQueueRecoveryWindowMinutes { get; set; } = 1440;
 
     public TimeSpan GetDefaultTtl() => TimeSpan.FromMinutes(DefaultTtlMinutes <= 0 ? 30 : DefaultTtlMinutes);
 
     public TimeSpan GetRateLimitWindow() => TimeSpan.FromSeconds(RateLimitWindowSeconds <= 0 ? 60 : RateLimitWindowSeconds);
 
     public TimeSpan GetReminderLockTtl() => TimeSpan.FromSeconds(ReminderLockSeconds <= 0 ? 30 : ReminderLockSeconds);
+
+    public TimeSpan GetConversationSessionTtl()
+    {
+        var minutes = ConversationSessionTtlMinutes <= 0 ? 720 : ConversationSessionTtlMinutes;
+        return TimeSpan.FromMinutes(minutes);
+    }
+
+    public TimeSpan GetReminderQueueRecoveryWindow()
+    {
+        var minutes = ReminderQueueRecoveryWindowMinutes <= 0 ? 1440 : ReminderQueueRecoveryWindowMinutes;
+        return TimeSpan.FromMinutes(minutes);
+    }
 
     public TimeSpan GetReminderWorkerPollInterval()
     {

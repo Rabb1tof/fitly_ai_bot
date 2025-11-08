@@ -159,6 +159,39 @@ public class TimeZoneHelperTests
     }
 
     [Fact]
+    public async Task ReminderService_RestoresQueueFromDatabase_WhenRedisQueueIsEmpty()
+    {
+        await using var dbContext = CreateDbContext();
+        var cache = new InMemoryRedisCacheService();
+        var redisOptions = Options.Create(new RedisOptions
+        {
+            ConnectionString = "localhost",
+            ReminderBatchSize = 5,
+            ReminderLockSeconds = 30,
+            ReminderLookaheadMinutes = 5,
+            ReminderQueueRecoveryWindowMinutes = 60
+        });
+
+        var service = new ReminderService(dbContext, cache, redisOptions);
+        var user = new CoreUser { Id = Guid.NewGuid(), TelegramId = 400, Username = "tester" };
+        dbContext.Users.Add(user);
+        await dbContext.SaveChangesAsync();
+
+        var scheduledAt = DateTime.UtcNow.AddSeconds(-10);
+        var reminder = await service.ScheduleReminderAsync(user.Id, CoverageReminderMessage, scheduledAt);
+
+        // Эмулируем очистку Redis-очереди.
+        await cache.RemoveRangeByScoreAsync(RedisCacheKeys.ReminderQueue(), double.NegativeInfinity, double.PositiveInfinity);
+
+        var now = DateTime.UtcNow;
+        var leases = await service.DequeueDueRemindersAsync(now, now.AddMinutes(1), CancellationToken.None);
+
+        leases.Should().HaveCount(1);
+        leases[0].Reminder.Id.Should().Be(reminder.Id);
+        leases[0].LockValue.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
     public async Task ReminderService_DequeueSkipsReminderWhenLockIsHeld()
     {
         await using var dbContext = CreateDbContext();
