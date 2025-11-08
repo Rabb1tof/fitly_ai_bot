@@ -21,9 +21,9 @@
 Внешние зависимости: PostgreSQL 16 (Docker Compose), Telegram Bot API, .NET 9 SDK, Redis 7 (для кэшей и очереди напоминаний).
 
 ### Redis в архитектуре
-- `session:{chatId}` — состояние `ConversationContext` для каждого чата.
+- `session:{chatId}` — кэш `ConversationContext` для каждого чата. TTL задаётся `Redis__ConversationSessionTtlMinutes` и используется как экспирация кэша; источник истины хранится в таблице `conversation_sessions` PostgreSQL.
 - `user:{telegramId}` — кэш профиля пользователя, ускоряющий повторные запросы.
-- `reminders:queue` — SortedSet с напоминаниями и их `NextTriggerAt`, из которого читает `ReminderWorker`.
+- `reminders:queue` — SortedSet с напоминаниями и их `NextTriggerAt`, из которого читает `ReminderWorker`. При очистке Redis очередь автоматически восстанавливается из PostgreSQL в пределах окна `Redis__ReminderQueueRecoveryWindowMinutes` под защитой блокировки `lock:reminders:restore`.
 - `reminder_templates` и `reminders:user:{guid}` — кэши системных шаблонов и активных напоминаний пользователя.
 - `rl:msg:{chatId}` / `rl:cb:{chatId}` — ключи для rate limiting сообщений и callback-ов.
 
@@ -38,17 +38,17 @@
 
 ### 2. Reminder scheduling
 1. Сценарии (шаблонные и кастомные) завершаются вызовом `ReminderWorkflow.FinalizeReminderAsync`.
-2. `ReminderService.ScheduleReminderAsync` сохраняет напоминание в БД в виде UTC-времени, привязанного к пользователю и (опционально) шаблону.
+2. `ReminderService.ScheduleReminderAsync` сохраняет напоминание в БД в виде UTC-времени, привязанного к пользователю и (опционально) шаблону, и ставит его в Redis-очередь.
 3. При отображении времени пользователю используется `TimeZoneHelper`, переводящий UTC в выбранную таймзону.
 
 ### 3. Reminder worker
-1. `ReminderWorker` (наследник `BackgroundService`) периодически вызывает `ReminderService.GetDueRemindersAsync`.
-2. Для каждого напоминания отправляется сообщение в Telegram и вызывается `ReminderService.MarkAsSentAsync`, обновляющий `NextTriggerAt` или деактивирующий запись.
+1. `ReminderWorker` (наследник `BackgroundService`) периодически вызывает `ReminderService.DequeueDueRemindersAsync`, который сначала читает Redis, а при пустой очереди восстанавливает её из БД.
+2. Для каждого напоминания отправляется сообщение в Telegram и вызывается `ReminderService.MarkAsSentAsync`, обновляющий `NextTriggerAt` или деактивирующий запись и при необходимости повторно ставящий напоминание в очередь.
 
 ### 4. Persistence
-- `HealthBotDbContext` описывает сущности пользователей, шаблонов и напоминаний.
-- Миграции хранятся в `HealthBot.Infrastructure/Migrations`; при старте `HealthBot.Api` выполняет `Database.Migrate()`.
-- Системные шаблоны сидируются миграциями и доступны сразу после запуска.
+- `HealthBotDbContext` описывает сущности пользователей, напоминаний, шаблонов и сессий (`conversation_sessions`).
+- Миграции хранятся в `HealthBot.Infrastructure/Migrations`; при старте `HealthBot.Api` выполняет `Database.Migrate()` и создаёт таблицу сессий.
+- Системные шаблоны и иные сиды применяются миграциями автоматически.
 
 ## ConversationContext
 - Хранит `Flow`, `Stage`, выбранный шаблон, интервалы, пользовательские сообщения, `ExpectManualInput` и `LastBotMessageId`.

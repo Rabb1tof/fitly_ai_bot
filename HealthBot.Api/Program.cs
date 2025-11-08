@@ -27,6 +27,7 @@ builder.Services.AddDbContextPool<HealthBotDbContext>(options =>
 
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<ReminderService>();
+builder.Services.AddScoped<IConversationSessionRepository, ConversationSessionRepository>();
 builder.Services.AddHostedService<ReminderWorker>();
 builder.Services.AddHttpClient("telegram");
 

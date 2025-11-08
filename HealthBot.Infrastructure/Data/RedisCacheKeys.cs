@@ -18,6 +18,8 @@ public static class RedisCacheKeys
 
     public static string ReminderDueCandidates() => "reminders:due";
 
+    public static string ReminderQueueRestoreLock() => "lock:reminders:restore";
+
     public static string RateLimitMessages(long chatId) => $"rl:msg:{chatId}";
 
     public static string RateLimitCallbacks(long chatId) => $"rl:cb:{chatId}";

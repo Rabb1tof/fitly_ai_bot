@@ -9,6 +9,7 @@ public class HealthBotDbContext : DbContext
     public DbSet<User> Users => Set<User>();
     public DbSet<Reminder> Reminders => Set<Reminder>();
     public DbSet<ReminderTemplate> ReminderTemplates => Set<ReminderTemplate>();
+    public DbSet<ConversationSession> ConversationSessions => Set<ConversationSession>();
 
     public HealthBotDbContext(DbContextOptions<HealthBotDbContext> options) : base(options)
     {
@@ -90,6 +91,25 @@ public class HealthBotDbContext : DbContext
                     DefaultRepeatIntervalMinutes = 180,
                     IsSystem = true
                 });
+        });
+
+        modelBuilder.Entity<ConversationSession>(entity =>
+        {
+            entity.ToTable("conversation_sessions");
+            entity.HasKey(s => s.ChatId);
+            entity.Property(s => s.ChatId).HasColumnName("chat_id").ValueGeneratedNever();
+            entity.Property(s => s.Flow).HasColumnName("flow").IsRequired();
+            entity.Property(s => s.Stage).HasColumnName("stage").IsRequired();
+            entity.Property(s => s.TemplateCode).HasColumnName("template_code").HasMaxLength(64);
+            entity.Property(s => s.TemplateId).HasColumnName("template_id");
+            entity.Property(s => s.TemplateTitle).HasColumnName("template_title").HasMaxLength(256);
+            entity.Property(s => s.TemplateDefaultRepeat).HasColumnName("template_default_repeat");
+            entity.Property(s => s.CustomMessage).HasColumnName("custom_message");
+            entity.Property(s => s.FirstDelayMinutes).HasColumnName("first_delay_minutes");
+            entity.Property(s => s.ExpectManualInput).HasColumnName("expect_manual_input").HasDefaultValue(false).IsRequired();
+            entity.Property(s => s.LastBotMessageId).HasColumnName("last_bot_message_id");
+            entity.Property(s => s.UpdatedAt).HasColumnName("updated_at").IsRequired().HasDefaultValueSql("NOW()");
+            entity.HasIndex(s => s.UpdatedAt);
         });
     }
 }
