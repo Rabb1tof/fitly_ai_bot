@@ -25,6 +25,8 @@ public class HealthBotDbContext : DbContext
             entity.Property(u => u.TelegramId).IsRequired();
             entity.Property(u => u.Username).HasMaxLength(64);
             entity.Property(u => u.TimeZoneId).HasMaxLength(128);
+            entity.Property(u => u.QuietHoursStartMinutes).HasColumnName("quiet_hours_start_minutes");
+            entity.Property(u => u.QuietHoursEndMinutes).HasColumnName("quiet_hours_end_minutes");
             entity.Property(u => u.CreatedAt).HasDefaultValueSql("NOW()");
         });
 
@@ -106,6 +108,8 @@ public class HealthBotDbContext : DbContext
             entity.Property(s => s.TemplateDefaultRepeat).HasColumnName("template_default_repeat");
             entity.Property(s => s.CustomMessage).HasColumnName("custom_message");
             entity.Property(s => s.FirstDelayMinutes).HasColumnName("first_delay_minutes");
+            entity.Property(s => s.PendingQuietHoursStartMinutes).HasColumnName("pending_quiet_hours_start_minutes");
+            entity.Property(s => s.PendingQuietHoursEndMinutes).HasColumnName("pending_quiet_hours_end_minutes");
             entity.Property(s => s.ExpectManualInput).HasColumnName("expect_manual_input").HasDefaultValue(false).IsRequired();
             entity.Property(s => s.LastBotMessageId).HasColumnName("last_bot_message_id");
             entity.Property(s => s.UpdatedAt).HasColumnName("updated_at").IsRequired().HasDefaultValueSql("NOW()");

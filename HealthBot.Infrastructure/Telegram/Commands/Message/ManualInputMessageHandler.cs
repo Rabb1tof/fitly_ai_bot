@@ -37,6 +37,12 @@ public sealed class ManualInputMessageHandler : MessageCommandHandlerBase
             case ConversationStage.AwaitingTimeZoneManual when session.ExpectManualInput:
                 await SettingsWorkflow.HandleManualTimezoneAsync(context, text);
                 break;
+            case ConversationStage.AwaitingQuietHoursStart when session.ExpectManualInput:
+                await SettingsWorkflow.HandleQuietHoursStartAsync(context, text);
+                break;
+            case ConversationStage.AwaitingQuietHoursEnd when session.ExpectManualInput:
+                await SettingsWorkflow.HandleQuietHoursEndAsync(context, text);
+                break;
             default:
                 await context.SendMessageAsync("Я пока не понимаю это сообщение. Используй /menu для управления напоминаниями.");
                 break;

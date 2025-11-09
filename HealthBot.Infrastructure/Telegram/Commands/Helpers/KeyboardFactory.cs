@@ -24,6 +24,7 @@ public static class KeyboardFactory
     public static InlineKeyboardMarkup SettingsMenu() => new(new[]
     {
         new[] { InlineKeyboardButton.WithCallbackData("🌍 Таймзона", TelegramCommandNames.CallbackSettingsTimezone) },
+        new[] { InlineKeyboardButton.WithCallbackData("😴 Тихие часы", TelegramCommandNames.CallbackSettingsQuietHours) },
         new[] { InlineKeyboardButton.WithCallbackData("↩️ В меню", TelegramCommandNames.CallbackMenu) }
     });
 
@@ -41,6 +42,32 @@ public static class KeyboardFactory
     {
         new[] { InlineKeyboardButton.WithCallbackData("↩️ К настройкам", TelegramCommandNames.CallbackMainSettings) }
     });
+
+    public static InlineKeyboardMarkup QuietHoursMenu(bool hasQuietHours)
+    {
+        var rows = new List<List<InlineKeyboardButton>>
+        {
+            new()
+            {
+                InlineKeyboardButton.WithCallbackData("✏️ Изменить", TelegramCommandNames.CallbackSettingsQuietHoursEdit)
+            }
+        };
+
+        if (hasQuietHours)
+        {
+            rows.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("🛑 Отключить", TelegramCommandNames.CallbackSettingsQuietHoursDisable)
+            });
+        }
+
+        rows.Add(new List<InlineKeyboardButton>
+        {
+            InlineKeyboardButton.WithCallbackData("↩️ К настройкам", TelegramCommandNames.CallbackMainSettings)
+        });
+
+        return new InlineKeyboardMarkup(rows);
+    }
 
     public static InlineKeyboardMarkup DelayKeyboard(string prefix, string code) => new(new List<List<InlineKeyboardButton>>
     {

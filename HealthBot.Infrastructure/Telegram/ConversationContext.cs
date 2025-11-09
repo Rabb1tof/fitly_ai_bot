@@ -12,6 +12,8 @@ public sealed class ConversationContext
     public int? TemplateDefaultRepeat { get; set; }
     public string? CustomMessage { get; set; }
     public int? FirstDelayMinutes { get; set; }
+    public int? PendingQuietHoursStartMinutes { get; set; }
+    public int? PendingQuietHoursEndMinutes { get; set; }
     public bool ExpectManualInput { get; set; }
     public int? LastBotMessageId { get; set; }
 
@@ -31,6 +33,8 @@ public sealed class ConversationContext
         TemplateDefaultRepeat = null;
         CustomMessage = null;
         FirstDelayMinutes = null;
+        PendingQuietHoursStartMinutes = null;
+        PendingQuietHoursEndMinutes = null;
         ExpectManualInput = false;
     }
 }
@@ -48,5 +52,7 @@ public enum ConversationStage
     AwaitingCustomMessage,
     AwaitingFirstDelayMinutes,
     AwaitingRepeatMinutes,
-    AwaitingTimeZoneManual
+    AwaitingTimeZoneManual,
+    AwaitingQuietHoursStart,
+    AwaitingQuietHoursEnd
 }

@@ -77,6 +77,9 @@ builder.Services.AddSingleton<ITelegramCommandHandler, ReminderDisableCallbackHa
 builder.Services.AddSingleton<ITelegramCommandHandler, SettingsTimezoneCallbackHandler>();
 builder.Services.AddSingleton<ITelegramCommandHandler, SettingsTimezoneSelectCallbackHandler>();
 builder.Services.AddSingleton<ITelegramCommandHandler, SettingsTimezoneManualCallbackHandler>();
+builder.Services.AddSingleton<ITelegramCommandHandler, SettingsQuietHoursCallbackHandler>();
+builder.Services.AddSingleton<ITelegramCommandHandler, SettingsQuietHoursEditCallbackHandler>();
+builder.Services.AddSingleton<ITelegramCommandHandler, SettingsQuietHoursDisableCallbackHandler>();
 builder.Services.AddSingleton<CommandDispatcher>();
 builder.Services.AddSingleton<IUpdateHandler, TelegramUpdateHandler>();
 builder.Services.AddHostedService<TelegramPollingService>();

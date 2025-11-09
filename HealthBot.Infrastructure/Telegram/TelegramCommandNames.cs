@@ -18,4 +18,7 @@ public static class TelegramCommandNames
     public const string CallbackSettingsTimezone = "settings_timezone";
     public const string CallbackSettingsTimezoneSelect = "settings_timezone_select";
     public const string CallbackSettingsTimezoneManual = "settings_timezone_manual";
+    public const string CallbackSettingsQuietHours = "settings_quiet_hours";
+    public const string CallbackSettingsQuietHoursEdit = "settings_quiet_hours_edit";
+    public const string CallbackSettingsQuietHoursDisable = "settings_quiet_hours_disable";
 }

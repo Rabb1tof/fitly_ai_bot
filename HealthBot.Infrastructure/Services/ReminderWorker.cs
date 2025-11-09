@@ -68,6 +68,11 @@ public class ReminderWorker : BackgroundService
                         continue;
                     }
 
+                    if (await reminderService.DeferReminderIfQuietHoursAsync(reminder, now, stoppingToken))
+                    {
+                        continue;
+                    }
+
                     try
                     {
                         await botClient.SendMessage(

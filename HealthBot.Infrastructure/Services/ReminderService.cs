@@ -37,6 +37,11 @@ public class ReminderService
         Guid? templateId = null,
         CancellationToken cancellationToken = default)
     {
+        var user = await _dbContext.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Id == userId, cancellationToken)
+            ?? throw new InvalidOperationException($"User {userId} not found.");
+
         var reminder = new Reminder
         {
             UserId = userId,
@@ -47,6 +52,8 @@ public class ReminderService
             RepeatIntervalMinutes = repeatIntervalMinutes,
             IsActive = true
         };
+
+        reminder.NextTriggerAt = ApplyQuietHours(user, reminder.NextTriggerAt);
 
         await _dbContext.Reminders.AddAsync(reminder, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -198,6 +205,10 @@ public class ReminderService
             if (reminder.RepeatIntervalMinutes is { } interval && interval > 0)
             {
                 reminder.NextTriggerAt = triggeredAt.AddMinutes(interval);
+                if (reminder.User is { } user)
+                {
+                    reminder.NextTriggerAt = ApplyQuietHours(user, reminder.NextTriggerAt);
+                }
             }
             else
             {
@@ -338,6 +349,30 @@ public class ReminderService
     public Task RequeueReminderAsync(Reminder reminder, CancellationToken cancellationToken = default)
         => EnqueueReminderAsync(reminder, cancellationToken);
 
+    public async Task<bool> DeferReminderIfQuietHoursAsync(Reminder reminder, DateTime utcNow, CancellationToken cancellationToken = default)
+    {
+        if (reminder.User is not { } user)
+        {
+            return false;
+        }
+
+        var referenceUtc = reminder.NextTriggerAt > utcNow ? reminder.NextTriggerAt : utcNow;
+        if (!TryGetQuietHoursExitUtc(user, referenceUtc, out var deferredUtc))
+        {
+            return false;
+        }
+
+        if (reminder.NextTriggerAt < deferredUtc)
+        {
+            reminder.NextTriggerAt = deferredUtc;
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await EnqueueReminderAsync(reminder, cancellationToken);
+        await InvalidateUserRemindersCacheAsync(reminder.UserId, cancellationToken);
+        return true;
+    }
+
     private Task EnqueueReminderAsync(Reminder reminder, CancellationToken cancellationToken)
     {
         var score = new DateTimeOffset(reminder.NextTriggerAt.ToUniversalTime()).ToUnixTimeMilliseconds();
@@ -408,4 +443,78 @@ public class ReminderService
             IsActive = reminder.IsActive,
             LastTriggeredAt = reminder.LastTriggeredAt
         };
+
+    private DateTime ApplyQuietHours(User user, DateTime candidateUtc)
+    {
+        return TryGetQuietHoursExitUtc(user, candidateUtc, out var deferredUtc)
+            ? deferredUtc
+            : candidateUtc;
+    }
+
+    private static bool TryGetQuietHoursExitUtc(User user, DateTime referenceUtc, out DateTime deferredUtc)
+    {
+        deferredUtc = default;
+
+        if (!HasQuietHours(user, out var startMinutes, out var endMinutes))
+        {
+            return false;
+        }
+
+        var timeZone = TimeZoneHelper.Resolve(user.TimeZoneId);
+        var local = TimeZoneHelper.ConvertUtcToUserTime(referenceUtc, timeZone);
+        var currentMinutes = local.Hour * 60 + local.Minute;
+
+        if (!IsWithinQuietHours(startMinutes, endMinutes, currentMinutes))
+        {
+            return false;
+        }
+
+        var exitLocal = CalculateQuietHoursExitLocal(local, startMinutes, endMinutes);
+        deferredUtc = TimeZoneInfo.ConvertTimeToUtc(exitLocal, timeZone);
+
+        if (deferredUtc <= referenceUtc)
+        {
+            deferredUtc = referenceUtc.AddSeconds(1);
+        }
+
+        return true;
+    }
+
+    private static bool HasQuietHours(User user, out int startMinutes, out int endMinutes)
+    {
+        if (user.QuietHoursStartMinutes is { } start && user.QuietHoursEndMinutes is { } end && start != end)
+        {
+            startMinutes = start;
+            endMinutes = end;
+            return true;
+        }
+
+        startMinutes = 0;
+        endMinutes = 0;
+        return false;
+    }
+
+    private static bool IsWithinQuietHours(int start, int end, int minutes)
+    {
+        if (start < end)
+        {
+            return minutes >= start && minutes < end;
+        }
+
+        return minutes >= start || minutes < end;
+    }
+
+    private static DateTime CalculateQuietHoursExitLocal(DateTime local, int start, int end)
+    {
+        var date = local.Date;
+
+        if (start < end)
+        {
+            return date.AddMinutes(end);
+        }
+
+        return (local.Hour * 60 + local.Minute) >= start
+            ? date.AddDays(1).AddMinutes(end)
+            : date.AddMinutes(end);
+    }
 }

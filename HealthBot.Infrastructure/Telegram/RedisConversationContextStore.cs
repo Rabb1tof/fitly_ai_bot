@@ -87,6 +87,8 @@ public sealed class RedisConversationContextStore : IConversationContextStore
             TemplateDefaultRepeat = session.TemplateDefaultRepeat,
             CustomMessage = session.CustomMessage,
             FirstDelayMinutes = session.FirstDelayMinutes,
+            PendingQuietHoursStartMinutes = session.PendingQuietHoursStartMinutes,
+            PendingQuietHoursEndMinutes = session.PendingQuietHoursEndMinutes,
             ExpectManualInput = session.ExpectManualInput,
             LastBotMessageId = session.LastBotMessageId
         };
@@ -103,6 +105,8 @@ public sealed class RedisConversationContextStore : IConversationContextStore
             TemplateDefaultRepeat = context.TemplateDefaultRepeat,
             CustomMessage = context.CustomMessage,
             FirstDelayMinutes = context.FirstDelayMinutes,
+            PendingQuietHoursStartMinutes = context.PendingQuietHoursStartMinutes,
+            PendingQuietHoursEndMinutes = context.PendingQuietHoursEndMinutes,
             ExpectManualInput = context.ExpectManualInput,
             LastBotMessageId = context.LastBotMessageId
         };
