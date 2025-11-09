@@ -159,6 +159,172 @@ public class TimeZoneHelperTests
     }
 
     [Fact]
+    public async Task ReminderService_ScheduleReminder_RespectsQuietHours()
+    {
+        await using var dbContext = CreateDbContext();
+        var cache = new InMemoryRedisCacheService();
+        var redisOptions = Options.Create(new RedisOptions
+        {
+            ConnectionString = "localhost",
+            ReminderBatchSize = 5,
+            ReminderLockSeconds = 30,
+            ReminderLookaheadMinutes = 5
+        });
+
+        var service = new ReminderService(dbContext, cache, redisOptions);
+        var user = new CoreUser
+        {
+            Id = Guid.NewGuid(),
+            TelegramId = 500,
+            Username = "tester",
+            TimeZoneId = "UTC+3",
+            QuietHoursStartMinutes = 0,
+            QuietHoursEndMinutes = 480
+        };
+
+        dbContext.Users.Add(user);
+        await dbContext.SaveChangesAsync();
+
+        var scheduledAtUtc = new DateTime(2025, 1, 1, 3, 0, 0, DateTimeKind.Utc);
+
+        var reminder = await service.ScheduleReminderAsync(user.Id, CoverageReminderMessage, scheduledAtUtc);
+
+        reminder.NextTriggerAt.Should().Be(new DateTime(2025, 1, 1, 5, 0, 0, DateTimeKind.Utc));
+    }
+
+    [Fact]
+    public async Task ReminderService_ScheduleReminder_OutsideQuietHours_Unchanged()
+    {
+        await using var dbContext = CreateDbContext();
+        var cache = new InMemoryRedisCacheService();
+        var redisOptions = Options.Create(new RedisOptions
+        {
+            ConnectionString = "localhost",
+            ReminderBatchSize = 5,
+            ReminderLockSeconds = 30,
+            ReminderLookaheadMinutes = 5
+        });
+
+        var service = new ReminderService(dbContext, cache, redisOptions);
+        var user = new CoreUser
+        {
+            Id = Guid.NewGuid(),
+            TelegramId = 510,
+            Username = "tester",
+            TimeZoneId = "UTC+3",
+            QuietHoursStartMinutes = 0,
+            QuietHoursEndMinutes = 480
+        };
+
+        dbContext.Users.Add(user);
+        await dbContext.SaveChangesAsync();
+
+        var scheduledAtUtc = new DateTime(2025, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+
+        var reminder = await service.ScheduleReminderAsync(user.Id, CoverageReminderMessage, scheduledAtUtc);
+
+        reminder.NextTriggerAt.Should().Be(scheduledAtUtc);
+    }
+
+    [Fact]
+    public async Task ReminderService_MarkAsSent_RequeuesAfterQuietHours()
+    {
+        await using var dbContext = CreateDbContext();
+        var cache = new InMemoryRedisCacheService();
+        var redisOptions = Options.Create(new RedisOptions
+        {
+            ConnectionString = "localhost",
+            ReminderBatchSize = 5,
+            ReminderLockSeconds = 30,
+            ReminderLookaheadMinutes = 5
+        });
+
+        var service = new ReminderService(dbContext, cache, redisOptions);
+        var user = new CoreUser
+        {
+            Id = Guid.NewGuid(),
+            TelegramId = 600,
+            Username = "tester",
+            QuietHoursStartMinutes = 1380,
+            QuietHoursEndMinutes = 420
+        };
+
+        dbContext.Users.Add(user);
+
+        var reminder = new Reminder
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            User = user,
+            Message = CoverageReminderMessage,
+            ScheduledAt = new DateTime(2025, 1, 1, 22, 0, 0, DateTimeKind.Utc),
+            NextTriggerAt = new DateTime(2025, 1, 1, 22, 0, 0, DateTimeKind.Utc),
+            RepeatIntervalMinutes = 60,
+            IsActive = true
+        };
+
+        dbContext.Reminders.Add(reminder);
+        await dbContext.SaveChangesAsync();
+
+        var trackedReminder = await dbContext.Reminders.Include(r => r.User).SingleAsync();
+
+        var triggeredAt = new DateTime(2025, 1, 1, 23, 30, 0, DateTimeKind.Utc);
+        await service.MarkAsSentAsync(new[] { trackedReminder }, triggeredAt, CancellationToken.None);
+
+        trackedReminder.NextTriggerAt.Should().Be(new DateTime(2025, 1, 2, 7, 0, 0, DateTimeKind.Utc));
+        var queueSnapshot = cache.GetSortedSetSnapshot(RedisCacheKeys.ReminderQueue());
+        queueSnapshot.Should().ContainKey(trackedReminder.Id.ToString("N"));
+    }
+
+    [Fact]
+    public async Task ReminderService_MarkAsSent_NoQuietHours_KeepsRegularInterval()
+    {
+        await using var dbContext = CreateDbContext();
+        var cache = new InMemoryRedisCacheService();
+        var redisOptions = Options.Create(new RedisOptions
+        {
+            ConnectionString = "localhost",
+            ReminderBatchSize = 5,
+            ReminderLockSeconds = 30,
+            ReminderLookaheadMinutes = 5
+        });
+
+        var service = new ReminderService(dbContext, cache, redisOptions);
+        var user = new CoreUser
+        {
+            Id = Guid.NewGuid(),
+            TelegramId = 610,
+            Username = "tester",
+            QuietHoursStartMinutes = 600,
+            QuietHoursEndMinutes = 600
+        };
+
+        dbContext.Users.Add(user);
+
+        var reminder = new Reminder
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            User = user,
+            Message = CoverageReminderMessage,
+            ScheduledAt = new DateTime(2025, 1, 1, 10, 0, 0, DateTimeKind.Utc),
+            NextTriggerAt = new DateTime(2025, 1, 1, 10, 0, 0, DateTimeKind.Utc),
+            RepeatIntervalMinutes = 120,
+            IsActive = true
+        };
+
+        dbContext.Reminders.Add(reminder);
+        await dbContext.SaveChangesAsync();
+
+        var trackedReminder = await dbContext.Reminders.Include(r => r.User).SingleAsync();
+
+        var triggeredAt = new DateTime(2025, 1, 1, 10, 0, 0, DateTimeKind.Utc);
+        await service.MarkAsSentAsync(new[] { trackedReminder }, triggeredAt, CancellationToken.None);
+
+        trackedReminder.NextTriggerAt.Should().Be(new DateTime(2025, 1, 1, 12, 0, 0, DateTimeKind.Utc));
+    }
+
+    [Fact]
     public async Task ReminderService_RestoresQueueFromDatabase_WhenRedisQueueIsEmpty()
     {
         await using var dbContext = CreateDbContext();
