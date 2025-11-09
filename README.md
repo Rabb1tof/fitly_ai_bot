@@ -1,6 +1,6 @@
 # HealthBot
 
-Telegram-бот для wellbeing-напоминаний, построенный на .NET 9 и PostgreSQL. Проект включает API, фоновые задачи и обработку Telegram-апдейтов, исполняется локально или в Docker.
+Telegram-бот ([@fitly_robot](https://t.me/fitly_robot)) для wellbeing-напоминаний, построенный на .NET 9 и PostgreSQL. Проект включает API, фоновые задачи и обработку Telegram-апдейтов, исполняется локально или в Docker.
 
 ## Содержание
 - [Обзор](#обзор)
