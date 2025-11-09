@@ -92,7 +92,7 @@ public class UserService
     {
         var userToUpdate = await _dbContext.Users
             .FirstOrDefaultAsync(u => u.Id == user.Id, cancellationToken);
-        
+
         if (userToUpdate is null)
         {
             return;
@@ -104,6 +104,38 @@ public class UserService
             await _dbContext.SaveChangesAsync(cancellationToken);
             user.TimeZoneId = timeZoneId;
         }
+
+        _dbContext.Entry(userToUpdate).State = EntityState.Detached;
+        await CacheUserAsync(user, cancellationToken);
+    }
+
+    public async Task SetQuietHoursAsync(User user, int? startMinutes, int? endMinutes, CancellationToken cancellationToken = default)
+    {
+        if (startMinutes.HasValue != endMinutes.HasValue)
+        {
+            throw new ArgumentException("Для установки тихих часов необходимо указать и начало, и конец, либо сбросить оба значения.");
+        }
+
+        if (startMinutes is < 0 or >= 1440 || endMinutes is < 0 or >= 1440)
+        {
+            throw new ArgumentOutOfRangeException("Значения тихих часов должны быть в диапазоне 0-1439 минут.");
+        }
+
+        var userToUpdate = await _dbContext.Users
+            .FirstOrDefaultAsync(u => u.Id == user.Id, cancellationToken);
+
+        if (userToUpdate is null)
+        {
+            return;
+        }
+
+        userToUpdate.QuietHoursStartMinutes = startMinutes;
+        userToUpdate.QuietHoursEndMinutes = endMinutes;
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        user.QuietHoursStartMinutes = startMinutes;
+        user.QuietHoursEndMinutes = endMinutes;
 
         _dbContext.Entry(userToUpdate).State = EntityState.Detached;
         await CacheUserAsync(user, cancellationToken);
